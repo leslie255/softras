@@ -1,0 +1,9 @@
+[package]
+name = "softras"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = "1.24.0"
+glam = { version = "0.30.9", features = ["bytemuck", "fast-math"] }
+log = { version = "0.4.29", features = ["kv"] }
