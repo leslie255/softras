@@ -200,11 +200,15 @@ impl Game {
             &mut self.overlay_text,
             "SOFTWARE RASTERIZER v{crate_version}"
         );
+        _ = write!(&mut self.overlay_text, "FPS: ");
+        match self.fps_counter.fps() {
+            Some(fps) => _ = write!(&mut self.overlay_text, "{:3.0}", fps),
+            None => _ = write!(&mut self.overlay_text, "**"),
+        };
+        _ = write!(&mut self.overlay_text, ", avg over 48: ");
         match self.fps_counter.average_fps() {
-            Some(avarage_fps) => {
-                _ = writeln!(&mut self.overlay_text, "FPS (average): {:.0}", avarage_fps)
-            }
-            None => _ = writeln!(&mut self.overlay_text, "FPS (average): **"),
+            Some(avarage_fps) => _ = writeln!(&mut self.overlay_text, "{:3.0}", avarage_fps),
+            None => _ = writeln!(&mut self.overlay_text, "**"),
         };
     }
 
@@ -219,34 +223,42 @@ impl Game {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0.0f64, |duration| duration.as_secs_f64())
             % 86400.) as f32;
-        let size = {
-            let size = 40.;
-            vec3(size, size, size)
-        };
-        let model = Mat4::from_rotation_x(t)
-            * Mat4::from_rotation_z(t)
-            * Mat4::from_translation(-0.5 * size)
-            * Mat4::from_scale(size);
         let view = Mat4::look_to_rh(
-            vec3(0., 0., 100.),
-            vec3(0., 0., -1.).normalize(),
-            vec3(0., 1., 0.),
+            vec3(0., 0., 200.),            // eye
+            vec3(0., 0., -1.).normalize(), // dir
+            vec3(0., 1., 0.),              // up
         );
-        let model_view = view * model;
         let projection = Mat4::perspective_rh(
-            90.0f32.to_radians(),                               // fov_y_radians
+            60.0f32.to_radians(),                               // fov_y_radians
             self.frame_width as f32 / self.frame_height as f32, // aspect_ratio
             0.1,                                                // z_near
-            500.0,                                              // z_far
+            1000.0,                                             // z_far
         );
-        let shader = BasicShader {
-            color: Rgb::from_hex(0x008080),
-            light_direction: vec3(-1., -1., -1.),
-            ..BasicShader::default()
-        };
-        for indices in Self::CUBE_INDICIES {
-            let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-            self.draw_triangle(triangle, projection, model_view, &shader);
+
+        let cubes: [(Vec3, f32, Rgb, f32); _] = [
+            // position, size, color, rotation speed
+            (vec3(-100., 0., 0.), 30., Rgb::from_hex(0x008080), 2.0f32),
+            (vec3(0., 0., 0.), 50., Rgb::from_hex(0xA06000), 0.5f32),
+            (vec3(100., 0., 0.), 40., Rgb::from_hex(0x00A060), 1.0f32),
+        ];
+
+        for (position, size, color, rotation_speed) in cubes {
+            let size_vec3 = vec3(size, size, size);
+            let shader = BasicShader {
+                color,
+                light_direction: vec3(-1., -1., -1.).normalize(),
+                ..BasicShader::default()
+            };
+            let model = Mat4::from_translation(position)
+                * Mat4::from_rotation_x(t * rotation_speed)
+                * Mat4::from_rotation_z(t * rotation_speed)
+                * Mat4::from_translation(-0.5 * size_vec3)
+                * Mat4::from_scale(size_vec3);
+            let model_view = view * model;
+            for indices in Self::CUBE_INDICIES {
+                let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
+                self.draw_triangle(triangle, projection, model_view, &shader);
+            }
         }
     }
 
@@ -260,28 +272,34 @@ impl Game {
         let mvp = projection * model_view;
         let triangle = triangle_local.map(|vertex| {
             let clip = mvp * vertex.position.extend(1.);
-            let depth = clip.w;
             Vertex {
-                position: { clip.xyz() / depth },
-                normal: (model_view.transform_vector3(vertex.normal) * depth)
+                position: { clip.xyz() / clip.w },
+                normal: (model_view.transform_vector3(vertex.normal) * clip.w)
                     .normalize_or(vec3(1., 0., 0.)),
                 ..vertex
             }
         });
+        if !is_clockwise_winding(triangle.map(|vertex| vertex.position.xy())) {
+            return;
+        }
         for x_pixel in 0..self.frame_width {
             for y_pixel in 0..self.frame_height {
                 let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
-                let coord = vec2(
+                let ndc = vec2(
                     x_pixel as f32 / self.frame_width as f32,
-                    y_pixel as f32 / self.frame_height as f32,
+                    1. - y_pixel as f32 / self.frame_height as f32,
                 )
                 .map(|f| f * 2. - 1.);
-                let rasterize_result = rasterize(triangle.map(|v| v.position.xy()), coord);
+                // if (x_min..x_max).contains(&x_pixel) || (y_min..y_max).contains(&y_pixel) {
+                //     self.frame_buffer[i_pixel] = RgbaU8::from_hex(0xFFFFFFFF);
+                //     continue;
+                // }
+                let rasterize_result = rasterize(triangle.map(|vertex| vertex.position.xy()), ndc);
                 let Some(weights) = rasterize_result else {
                     continue;
                 };
                 let this_depth = triangular_interpolate(weights, triangle.map(|v| v.position.z));
-                if !(0.0..=1.0).contains(&this_depth) {
+                if this_depth < 0. {
                     continue;
                 }
                 let depth = &mut self.depth_buffer[i_pixel];
@@ -290,7 +308,7 @@ impl Game {
                 }
                 *depth = this_depth;
                 let fragment_input = FragmentInput {
-                    position: vec3(coord.x, coord.y, this_depth),
+                    position: vec3(ndc.x, ndc.y, this_depth),
                     depth: this_depth,
                     uv: vec2(
                         triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
@@ -313,6 +331,21 @@ fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32
     w0 * x0 + w1 * x1 + w2 * x2
 }
 
+fn ndc_to_pixel_x(x_ndc: f32, width: u32) -> u32 {
+    ((0.5 + 0.5 * x_ndc.clamp(-1., 1.)) * width as f32) as u32
+}
+
+fn ndc_to_pixel_y(y_ndc: f32, height: u32) -> u32 {
+    ((0.5 - 0.5 * y_ndc.clamp(-1., 1.)) * height as f32) as u32
+}
+
+fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
+    fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
+        0.5 * (c - a).dot((b - a).perp())
+    }
+    signed_area(a, b, c) >= 0.
+}
+
 /// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
 /// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
 fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
@@ -323,7 +356,10 @@ fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
     let area_total = area_bcp + area_cap + area_abp;
-    if area_bcp >= 0. && area_cap >= 0. && area_abp >= 0. && area_total > f32::EPSILON {
+    if (area_bcp > 0.) == (area_cap > 0.)
+        && (area_cap > 0.) == (area_abp > 0.)
+        && area_total > f32::EPSILON
+    {
         // Inside.
         let inv_area_total = 1. / area_total;
         Some([
@@ -412,7 +448,7 @@ impl Shader for BasicShader {
 
 #[derive(Debug, Clone, Copy)]
 struct FpsMeter {
-    window: [f64; 24],
+    frame_times: [f64; 48],
     cursor: usize,
     frame_time: Option<f64>,
 }
@@ -426,7 +462,7 @@ impl Default for FpsMeter {
 impl FpsMeter {
     const fn new() -> Self {
         Self {
-            window: [0.; _],
+            frame_times: [0.; _],
             cursor: 0,
             frame_time: None,
         }
@@ -435,9 +471,9 @@ impl FpsMeter {
     fn new_frame_time(&mut self, frame_time: f64) {
         let i = self.cursor;
         self.cursor += 1;
-        self.cursor %= self.window.len();
-        self.window[i] = frame_time;
-        let frame_time = self.window.iter().sum::<f64>() / 24.;
+        self.cursor %= self.frame_times.len();
+        self.frame_times[i] = frame_time;
+        let frame_time = self.frame_times.iter().sum::<f64>() / (self.frame_times.len() as f64);
         match &mut self.frame_time {
             Some(frame_time_) => *frame_time_ = frame_time,
             frame_time_ @ None if self.cursor == 0 => *frame_time_ = Some(frame_time),
@@ -451,5 +487,17 @@ impl FpsMeter {
 
     fn average_fps(&self) -> Option<f64> {
         self.average_frame_time().map(|f| 1. / f)
+    }
+
+    fn fps(&self) -> Option<f64> {
+        if self.frame_time.is_some() || self.cursor >= 1 {
+            let i = self
+                .cursor
+                .checked_sub(1)
+                .unwrap_or(self.frame_times.len() - 1);
+            Some(1. / self.frame_times[i])
+        } else {
+            None
+        }
     }
 }
