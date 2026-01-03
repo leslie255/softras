@@ -55,10 +55,10 @@ impl From<Rgb> for RgbaU8 {
 impl From<Rgba> for RgbaU8 {
     fn from(color: Rgba) -> Self {
         Self {
-            r: (color.r * 255.) as u8,
-            g: (color.g * 255.) as u8,
-            b: (color.b * 255.) as u8,
-            a: (color.a * 255.) as u8,
+            r: (color.r.clamp(0., 1.) * 255.) as u8,
+            g: (color.g.clamp(0., 1.) * 255.) as u8,
+            b: (color.b.clamp(0., 1.) * 255.) as u8,
+            a: (color.a.clamp(0., 1.) * 255.) as u8,
         }
     }
 }

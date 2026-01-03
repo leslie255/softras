@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-use bytemuck::Zeroable as _;
+use bytemuck::{Pod, Zeroable};
 use glam::*;
 
 mod key_code;
@@ -41,6 +41,8 @@ impl Default for Game {
 }
 
 impl Game {
+    /* === Start of Public Interface === */
+
     pub fn new() -> Self {
         Self {
             frame_buffer: Vec::new(),
@@ -114,37 +116,39 @@ impl Game {
         bytemuck::fill_zeroes(&mut self.key_states);
     }
 
-    const CUBE_VERTICES: [Vec3; 24] = [
+    /* === End of Public Interface === */
+
+    const CUBE_VERTICES: [Vertex; 24] = [
         // South
-        vec3(0., 0., 1.),
-        vec3(1., 0., 1.),
-        vec3(1., 1., 1.),
-        vec3(0., 1., 1.),
+        Vertex::new([0., 0., 1.], [0., 1.], [0., 0., 1.]),
+        Vertex::new([1., 0., 1.], [1., 1.], [0., 0., 1.]),
+        Vertex::new([1., 1., 1.], [1., 0.], [0., 0., 1.]),
+        Vertex::new([0., 1., 1.], [0., 0.], [0., 0., 1.]),
         // North
-        vec3(0., 0., 0.),
-        vec3(0., 1., 0.),
-        vec3(1., 1., 0.),
-        vec3(1., 0., 0.),
+        Vertex::new([0., 0., 0.], [1., 1.], [0., 0., -1.]),
+        Vertex::new([0., 1., 0.], [1., 0.], [0., 0., -1.]),
+        Vertex::new([1., 1., 0.], [0., 0.], [0., 0., -1.]),
+        Vertex::new([1., 0., 0.], [0., 1.], [0., 0., -1.]),
         // East
-        vec3(1., 0., 0.),
-        vec3(1., 1., 0.),
-        vec3(1., 1., 1.),
-        vec3(1., 0., 1.),
+        Vertex::new([1., 0., 0.], [1., 1.], [1., 0., 0.]),
+        Vertex::new([1., 1., 0.], [1., 0.], [1., 0., 0.]),
+        Vertex::new([1., 1., 1.], [0., 0.], [1., 0., 0.]),
+        Vertex::new([1., 0., 1.], [0., 1.], [1., 0., 0.]),
         // West
-        vec3(0., 1., 0.),
-        vec3(0., 0., 0.),
-        vec3(0., 0., 1.),
-        vec3(0., 1., 1.),
+        Vertex::new([0., 1., 0.], [0., 0.], [-1., 0., 0.]),
+        Vertex::new([0., 0., 0.], [0., 1.], [-1., 0., 0.]),
+        Vertex::new([0., 0., 1.], [1., 1.], [-1., 0., 0.]),
+        Vertex::new([0., 1., 1.], [1., 0.], [-1., 0., 0.]),
         // Up
-        vec3(1., 1., 0.),
-        vec3(0., 1., 0.),
-        vec3(0., 1., 1.),
-        vec3(1., 1., 1.),
+        Vertex::new([1., 1., 0.], [0., 1.], [0., 1., 0.]),
+        Vertex::new([0., 1., 0.], [1., 1.], [0., 1., 0.]),
+        Vertex::new([0., 1., 1.], [1., 0.], [0., 1., 0.]),
+        Vertex::new([1., 1., 1.], [0., 0.], [0., 1., 0.]),
         // Down
-        vec3(0., 0., 0.),
-        vec3(1., 0., 0.),
-        vec3(1., 0., 1.),
-        vec3(0., 0., 1.),
+        Vertex::new([0., 0., 0.], [0., 1.], [0., -1., 0.]),
+        Vertex::new([1., 0., 0.], [1., 1.], [0., -1., 0.]),
+        Vertex::new([1., 0., 1.], [1., 0.], [0., -1., 0.]),
+        Vertex::new([0., 0., 1.], [0., 0.], [0., -1., 0.]),
     ];
 
     #[rustfmt::skip]
@@ -183,14 +187,6 @@ impl Game {
         self.frame_buffer.fill(background_color.into());
         self.depth_buffer.resize(n_pixels, 0.0f32);
         self.depth_buffer.fill(f32::INFINITY);
-        let palatte = [
-            Rgb::from_hex(0xFF0000),
-            Rgb::from_hex(0x808000),
-            Rgb::from_hex(0x00FF00),
-            Rgb::from_hex(0x008080),
-            Rgb::from_hex(0x0000FF),
-            Rgb::from_hex(0x800080),
-        ];
         let t = (SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0.0f64, |duration| duration.as_secs_f64())
@@ -198,18 +194,31 @@ impl Game {
         let size = 0.5 * f32::min(self.frame_width as f32, self.frame_height as f32);
         let size = vec3(size, size, size);
         let model = Mat4::from_rotation_x(t)
-            * Mat4::from_rotation_y(t)
             * Mat4::from_rotation_z(t)
             * Mat4::from_translation(-0.5 * size)
             * Mat4::from_scale(size);
-        for (&indices, &color) in Self::CUBE_INDICIES.iter().zip(palatte.iter().cycle()) {
-            let triangle_local = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-            let triangle_world = triangle_local.map(|v| model.transform_point3(v));
-            self.draw_triangle(triangle_world, color);
+        let shader = BasicShader {
+            color: Rgb::from_hex(0x008080),
+            light_direction: vec3(-1., -1., -1.),
+            ..BasicShader::default()
+        };
+        let shader: &dyn Shader = &shader;
+        for indices in Self::CUBE_INDICIES {
+            let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
+            self.draw_triangle(triangle, model, shader);
         }
     }
 
-    fn draw_triangle(&mut self, triangle: [Vec3; 3], color: Rgb) {
+    fn draw_triangle<S: Shader + ?Sized>(
+        &mut self,
+        triangle_local: [Vertex; 3],
+        model: Mat4,
+        shader: &S,
+    ) {
+        let triangle = triangle_local.map(|v| Vertex {
+            position: model.transform_point3(v.position),
+            ..v
+        });
         for x_pixel in 0..self.frame_width {
             for y_pixel in 0..self.frame_height {
                 let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
@@ -217,28 +226,47 @@ impl Game {
                     x_pixel as f32 - 0.5 * (self.frame_width as f32), //
                     -(y_pixel as f32) + 0.5 * (self.frame_height as f32), //
                 );
-                if let Some(this_depth) = rasterize(triangle, coord) {
-                    let depth = &mut self.depth_buffer[i_pixel];
-                    if *depth > this_depth {
-                        self.frame_buffer[i_pixel] = RgbaU8::from(color);
-                        *depth = this_depth;
-                    }
+                let rasterize_result = rasterize(triangle.map(|v| v.position.xy()), coord);
+                let Some(weights) = rasterize_result else {
+                    continue;
                 };
+                let this_depth = triangular_interpolate(weights, triangle.map(|v| v.position.z));
+                let depth = &mut self.depth_buffer[i_pixel];
+                if *depth <= this_depth {
+                    continue;
+                }
+                let fragment_input = FragmentInput {
+                    position: vec3(coord.x, coord.y, this_depth),
+                    uv: vec2(
+                        triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
+                        triangular_interpolate(weights, triangle.map(|v| v.uv.y)),
+                    ),
+                    normal: model
+                        .transform_vector3(vec3(
+                            triangular_interpolate(weights, triangle.map(|v| v.normal.x)),
+                            triangular_interpolate(weights, triangle.map(|v| v.normal.y)),
+                            triangular_interpolate(weights, triangle.map(|v| v.normal.z)),
+                        ))
+                        .normalize_or(vec3(0., 0., 1.)),
+                };
+                let fragment_result = shader.fragment(fragment_input);
+                self.frame_buffer[i_pixel] = RgbaU8::from(fragment_result);
+                *depth = this_depth;
             }
         }
     }
 }
 
+fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
+    w0 * x0 + w1 * x1 + w2 * x2
+}
+
 /// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
-/// returns the triangular-interpolated value between `a.z`, `b.z`, and `c.z` (returns
-/// `None` otherwise).
-fn rasterize([a, b, c]: [Vec3; 3], p: Vec2) -> Option<f32> {
+/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
+fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
         0.5 * (c - a).dot((b - a).perp())
     }
-    let (a_z, a) = (a.z, a.xy());
-    let (b_z, b) = (b.z, b.xy());
-    let (c_z, c) = (c.z, c.xy());
     let area_bcp = signed_area(b, c, p);
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
@@ -249,13 +277,79 @@ fn rasterize([a, b, c]: [Vec3; 3], p: Vec2) -> Option<f32> {
     if sign_bcp && sign_cap && sign_abp && area_total > f32::EPSILON {
         // Inside.
         let inv_area_total = 1. / area_total;
-        Some(
-            inv_area_total * area_bcp * a_z
-                + inv_area_total * area_cap * b_z
-                + inv_area_total * area_abp * c_z,
-        )
+        Some([
+            inv_area_total * area_bcp, // weight of A
+            inv_area_total * area_cap, // weight of A
+            inv_area_total * area_abp, // weight of A
+        ])
     } else {
         // Outside.
         None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
+#[repr(C)]
+struct Vertex {
+    position: Vec3,
+    uv: Vec2,
+    normal: Vec3,
+}
+
+impl Vertex {
+    const fn new(
+        [x, y, z]: [f32; 3],
+        [u, v]: [f32; 2],
+        [x_normal, y_normal, z_normal]: [f32; 3],
+    ) -> Self {
+        Self {
+            position: vec3(x, y, z),
+            uv: vec2(u, v),
+            normal: vec3(x_normal, y_normal, z_normal),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
+#[repr(C)]
+struct FragmentInput {
+    position: Vec3,
+    uv: Vec2,
+    normal: Vec3,
+}
+
+trait Shader {
+    fn fragment(&self, input: FragmentInput) -> Rgba;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BasicShader {
+    color: Rgb,
+    light_direction: Vec3,
+    shading_intensity: f32,
+}
+
+impl Default for BasicShader {
+    fn default() -> Self {
+        Self {
+            color: Rgb::from_hex(0x008080),
+            light_direction: vec3(1., 1., 1.).normalize(),
+            shading_intensity: 0.8,
+        }
+    }
+}
+
+impl Shader for BasicShader {
+    fn fragment(&self, input: FragmentInput) -> Rgba {
+        let normal = input.normal.normalize_or(vec3(1., 0., 0.));
+        let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
+        let theta = f32::acos(normal.dot(light_direction));
+        let shading = theta / (2. * std::f32::consts::PI);
+        Rgb {
+            r: self.color.r + self.shading_intensity * (shading - 0.5),
+            g: self.color.g + self.shading_intensity * (shading - 0.5),
+            b: self.color.b + self.shading_intensity * (shading - 0.5),
+        }
+        .into()
     }
 }

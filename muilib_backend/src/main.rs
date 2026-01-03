@@ -103,7 +103,7 @@ impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<
             overlay_text_view: muilib::TextView::new(&uicx)
                 .with_font_size(18.)
                 .with_bg_color(Srgba::from_hex(0x80808080)),
-            image_view: muilib::ImageView::new(RectSize::new(0., 0.)),
+            image_view: muilib::ImageView::new(RectSize::new(480., 320.)),
             game: softras::Game::new(),
             uicx,
             window,
