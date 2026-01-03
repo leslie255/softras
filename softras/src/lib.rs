@@ -195,7 +195,8 @@ impl Game {
 
     fn update_overlay_text(&mut self) {
         self.overlay_text.clear();
-        _ = writeln!(&mut self.overlay_text, "SOFTWARE RASTERIZER v0.0.0");
+        let crate_version = env!("CARGO_PKG_VERSION");
+        _ = writeln!(&mut self.overlay_text, "SOFTWARE RASTERIZER v{crate_version}");
         match self.fps_counter.average_fps() {
             Some(avarage_fps) => {
                 _ = writeln!(&mut self.overlay_text, "FPS (average): {:.0}", avarage_fps)
