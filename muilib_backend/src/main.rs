@@ -137,7 +137,9 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     self.window.scale_factor(),
                     None,
                 );
-                self.game.notify_display_resize(size.width, size.height);
+                let width = 480.0f32;
+                let height = width / size.width as f32 * size.height as f32;
+                self.game.notify_display_resize(width as u32, height as u32);
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -167,7 +169,8 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 device_id: _,
                 position,
             } => {
-                self.game.notify_cursor_moved(position.x as f32, position.y as f32);
+                self.game
+                    .notify_cursor_moved(position.x as f32, position.y as f32);
             }
             WindowEvent::MouseWheel {
                 device_id: _,

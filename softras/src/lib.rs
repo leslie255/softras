@@ -195,7 +195,8 @@ impl Game {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0.0f64, |duration| duration.as_secs_f64())
             % 86400.) as f32;
-        let size = vec3(500., 500., 500.);
+        let size = 0.5 * f32::min(self.frame_width as f32, self.frame_height as f32);
+        let size = vec3(size, size, size);
         let model = Mat4::from_rotation_x(t)
             * Mat4::from_rotation_y(t)
             * Mat4::from_rotation_z(t)
