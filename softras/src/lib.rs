@@ -235,11 +235,40 @@ impl Game {
             1000.0,                                             // z_far
         );
 
+        // let shader = BasicShader {
+        //     color: Rgb::from_hex(0x008080),
+        //     light_direction: vec3(0., -0., -1.).normalize(),
+        //     ..BasicShader::default()
+        // };
+        // let model = Mat4::IDENTITY;
+        // self.draw_triangle(
+        //     [
+        //         Vertex::new([0., 120., 0.], [0., 0.], [0., 0., 1.]),
+        //         Vertex::new([100., 120., 0.], [0., 1.], [0., 0., 1.]),
+        //         Vertex::new([-100., 120., 0.], [1., 1.], [0., 0., 1.]),
+        //     ],
+        //     projection,
+        //     view * model,
+        //     &shader,
+        // );
+
         let cubes: [(Vec3, f32, Rgb, f32); _] = [
             // position, size, color, rotation speed
             (vec3(-100., 0., 0.), 30., Rgb::from_hex(0x008080), 2.0f32),
             (vec3(0., 0., 0.), 50., Rgb::from_hex(0xA06000), 0.5f32),
             (vec3(100., 0., 0.), 40., Rgb::from_hex(0x00A060), 1.0f32),
+            // (
+            //     vec3(-100., -100., -200.),
+            //     100.,
+            //     Rgb::from_hex(0xA03030),
+            //     0.25f32,
+            // ),
+            // (
+            //     vec3(240., 50., -300.),
+            //     200.,
+            //     Rgb::from_hex(0x206080),
+            //     0.125f32,
+            // ),
         ];
 
         for (position, size, color, rotation_speed) in cubes {
@@ -282,18 +311,28 @@ impl Game {
         if !is_clockwise_winding(triangle.map(|vertex| vertex.position.xy())) {
             return;
         }
-        for x_pixel in 0..self.frame_width {
-            for y_pixel in 0..self.frame_height {
+        let [x_min, x_max, y_min, y_max]: [u32; 4] = {
+            let [p0, p1, p2] = triangle.map(|vertex| vertex.position.xy());
+            let x_min_ndc = p0.x.min(p1.x).min(p2.x);
+            let x_max_ndc = p0.x.max(p1.x).max(p2.x);
+            let y_min_ndc = p0.y.min(p1.y).min(p2.y);
+            let y_max_ndc = p0.y.max(p1.y).max(p2.y);
+            let width = self.frame_width;
+            let height = self.frame_height;
+            [
+                (ndc_to_pixel_x(x_min_ndc, width).floor().max(0.) as u32).min(width),
+                (ndc_to_pixel_x(x_max_ndc, width).ceil().max(0.) as u32).min(width),
+                (ndc_to_pixel_y(y_max_ndc, height).floor().max(0.) as u32).min(height),
+                (ndc_to_pixel_y(y_min_ndc, height).ceil().max(0.) as u32).min(height),
+            ]
+        };
+        for x_pixel in x_min..=x_max {
+            for y_pixel in y_min..=y_max {
                 let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
                 let ndc = vec2(
-                    x_pixel as f32 / self.frame_width as f32,
-                    1. - y_pixel as f32 / self.frame_height as f32,
-                )
-                .map(|f| f * 2. - 1.);
-                // if (x_min..x_max).contains(&x_pixel) || (y_min..y_max).contains(&y_pixel) {
-                //     self.frame_buffer[i_pixel] = RgbaU8::from_hex(0xFFFFFFFF);
-                //     continue;
-                // }
+                    pixel_to_ndc_x(x_pixel, self.frame_width),
+                    pixel_to_ndc_y(y_pixel, self.frame_height),
+                );
                 let rasterize_result = rasterize(triangle.map(|vertex| vertex.position.xy()), ndc);
                 let Some(weights) = rasterize_result else {
                     continue;
@@ -331,12 +370,26 @@ fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32
     w0 * x0 + w1 * x1 + w2 * x2
 }
 
-fn ndc_to_pixel_x(x_ndc: f32, width: u32) -> u32 {
-    ((0.5 + 0.5 * x_ndc.clamp(-1., 1.)) * width as f32) as u32
+fn ndc_to_pixel_x(x_ndc: f32, width: u32) -> f32 {
+    let width_f = width as f32;
+    0.5 * width_f * (x_ndc + 1.)
 }
 
-fn ndc_to_pixel_y(y_ndc: f32, height: u32) -> u32 {
-    ((0.5 - 0.5 * y_ndc.clamp(-1., 1.)) * height as f32) as u32
+fn ndc_to_pixel_y(y_ndc: f32, height: u32) -> f32 {
+    let height_f = height as f32;
+    -0.5 * height_f * (y_ndc - 1.)
+}
+
+fn pixel_to_ndc_x(x_pixel: u32, width: u32) -> f32 {
+    let x_pixel_f = x_pixel.min(width - 1) as f32;
+    let width_f = width as f32;
+    2. * x_pixel_f / width_f - 1.
+}
+
+fn pixel_to_ndc_y(y_pixel: u32, height: u32) -> f32 {
+    let y_pixel_f = y_pixel.min(height - 1) as f32;
+    let height_f = height as f32;
+    -2. * y_pixel_f / height_f + 1.
 }
 
 fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
