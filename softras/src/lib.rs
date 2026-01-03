@@ -1,3 +1,5 @@
+use std::time::SystemTime;
+
 use glam::*;
 
 mod key_code;
@@ -28,8 +30,6 @@ pub struct Game {
 
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
-
-    triangle: [Vec3; 3],
 }
 
 impl Default for Game {
@@ -46,11 +46,6 @@ impl Game {
             frame_height: 0,
             key_states: [false; _],
             cursor_position: None,
-            triangle: [
-                vec3(0., 120., 0.),     //
-                vec3(-100., -100., 0.), //
-                vec3(100., -100., 0.),  //
-            ],
         }
     }
 
@@ -116,6 +111,49 @@ impl Game {
         bytemuck::fill_zeroes(&mut self.key_states);
     }
 
+    const CUBE_VERTICES: [Vec3; 24] = [
+        // South
+        vec3(0., 0., 1.),
+        vec3(1., 0., 1.),
+        vec3(1., 1., 1.),
+        vec3(0., 1., 1.),
+        // North
+        vec3(0., 0., 0.),
+        vec3(0., 1., 0.),
+        vec3(1., 1., 0.),
+        vec3(1., 0., 0.),
+        // East
+        vec3(1., 0., 0.),
+        vec3(1., 1., 0.),
+        vec3(1., 1., 1.),
+        vec3(1., 0., 1.),
+        // West
+        vec3(0., 1., 0.),
+        vec3(0., 0., 0.),
+        vec3(0., 0., 1.),
+        vec3(0., 1., 1.),
+        // Up
+        vec3(1., 1., 0.),
+        vec3(0., 1., 0.),
+        vec3(0., 1., 1.),
+        vec3(1., 1., 1.),
+        // Down
+        vec3(0., 0., 0.),
+        vec3(1., 0., 0.),
+        vec3(1., 0., 1.),
+        vec3(0., 0., 1.),
+    ];
+
+    #[rustfmt::skip]
+    const CUBE_INDICIES: [[u16; 3]; 12] = [
+        /* South */ [0, 1, 2], [2, 3, 0],
+        /* North */ [4, 5, 6], [6, 7, 4],
+        /* East  */ [8, 9, 10], [10, 11, 8],
+        /* West  */ [12, 13, 14], [14, 15, 12],
+        /* Up    */ [16, 17, 18], [18, 19, 16],
+        /* Down  */ [20, 21, 22], [22, 23, 20],
+    ];
+
     fn key_is_down(&self, key_code: KeyCode) -> bool {
         self.key_states[key_code as usize]
     }
@@ -137,26 +175,45 @@ impl Game {
 
     fn draw(&mut self) {
         let background_color = Rgb::from_hex(0x040404);
-        self.frame_buffer.resize(
-            self.frame_width as usize * self.frame_height as usize,
-            RgbaU8::from(background_color),
-        );
+        let n_pixels = self.frame_width as usize * self.frame_height as usize;
+        self.frame_buffer.resize(n_pixels, background_color.into());
+        self.frame_buffer.fill(background_color.into());
+        let palatte = [
+            Rgb::from_hex(0xFF0000),
+            Rgb::from_hex(0x808000),
+            Rgb::from_hex(0x00FF00),
+            Rgb::from_hex(0x008080),
+            Rgb::from_hex(0x0000FF),
+            Rgb::from_hex(0x800080),
+        ];
+        let t = (SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0.0f64, |duration| duration.as_secs_f64())
+            % 86400.) as f32;
+        let size = vec3(500., 500., 500.);
+        let model = Mat4::from_rotation_x(t)
+            * Mat4::from_rotation_y(t)
+            * Mat4::from_rotation_z(t)
+            * Mat4::from_translation(-0.5 * size)
+            * Mat4::from_scale(size);
+        for (&indices, &color) in Self::CUBE_INDICIES.iter().zip(palatte.iter().cycle()) {
+            let triangle_local = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
+            let triangle_world = triangle_local.map(|v| model.transform_point3(v));
+            self.draw_triangle(triangle_world, color);
+        }
+    }
 
+    fn draw_triangle(&mut self, triangle: [Vec3; 3], color: Rgb) {
         for x_pixel in 0..self.frame_width {
             for y_pixel in 0..self.frame_height {
                 let coord = vec2(
                     x_pixel as f32 - 0.5 * (self.frame_width as f32), //
                     -(y_pixel as f32) + 0.5 * (self.frame_height as f32), //
                 );
-                let mut color = background_color;
-                if rasterize(self.triangle, coord).is_some() {
-                    color = Rgb::from_hex(0x008080);
+                if rasterize(triangle, coord).is_some() {
+                    let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
+                    self.frame_buffer[i_pixel] = RgbaU8::from(color);
                 };
-                if coord.distance_squared(vec2(0., 0.)) < 8.0f32.powi(2) {
-                    color = Rgb::from_hex(0xFFFFFF);
-                }
-                let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
-                self.frame_buffer[i_pixel] = RgbaU8::from(color);
             }
         }
     }
@@ -175,12 +232,13 @@ fn rasterize([a, b, c]: [Vec3; 3], p: Vec2) -> Option<f32> {
     let area_bcp = signed_area(b, c, p);
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
-    let sign_bcp = area_bcp > 0.;
-    let sign_cap = area_cap > 0.;
-    let sign_abp = area_abp > 0.;
-    if sign_bcp == sign_cap && sign_cap == sign_abp {
+    let sign_bcp = area_bcp >= 0.;
+    let sign_cap = area_cap >= 0.;
+    let sign_abp = area_abp >= 0.;
+    let area_total = area_bcp + area_cap + area_abp;
+    if sign_bcp && sign_cap && sign_abp && area_total > f32::EPSILON {
         // Inside.
-        let inv_area_total = 1. / (area_bcp + area_cap + area_abp);
+        let inv_area_total = 1. / area_total;
         Some(
             inv_area_total * area_bcp * a_z
                 + inv_area_total * area_cap * b_z
