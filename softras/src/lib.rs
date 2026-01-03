@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use bytemuck::Zeroable as _;
 use glam::*;
 
 mod key_code;
@@ -25,6 +26,7 @@ pub struct FrameOutput<'game> {
 /// The main game state struct.
 pub struct Game {
     frame_buffer: Vec<RgbaU8>,
+    depth_buffer: Vec<f32>,
     frame_width: u32,
     frame_height: u32,
 
@@ -42,6 +44,7 @@ impl Game {
     pub fn new() -> Self {
         Self {
             frame_buffer: Vec::new(),
+            depth_buffer: Vec::new(),
             frame_width: 0,
             frame_height: 0,
             key_states: [false; _],
@@ -176,8 +179,10 @@ impl Game {
     fn draw(&mut self) {
         let background_color = Rgb::from_hex(0x040404);
         let n_pixels = self.frame_width as usize * self.frame_height as usize;
-        self.frame_buffer.resize(n_pixels, background_color.into());
+        self.frame_buffer.resize(n_pixels, RgbaU8::zeroed());
         self.frame_buffer.fill(background_color.into());
+        self.depth_buffer.resize(n_pixels, 0.0f32);
+        self.depth_buffer.fill(f32::INFINITY);
         let palatte = [
             Rgb::from_hex(0xFF0000),
             Rgb::from_hex(0x808000),
@@ -206,13 +211,17 @@ impl Game {
     fn draw_triangle(&mut self, triangle: [Vec3; 3], color: Rgb) {
         for x_pixel in 0..self.frame_width {
             for y_pixel in 0..self.frame_height {
+                let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
                 let coord = vec2(
                     x_pixel as f32 - 0.5 * (self.frame_width as f32), //
                     -(y_pixel as f32) + 0.5 * (self.frame_height as f32), //
                 );
-                if rasterize(triangle, coord).is_some() {
-                    let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
-                    self.frame_buffer[i_pixel] = RgbaU8::from(color);
+                if let Some(this_depth) = rasterize(triangle, coord) {
+                    let depth = &mut self.depth_buffer[i_pixel];
+                    if *depth > this_depth {
+                        self.frame_buffer[i_pixel] = RgbaU8::from(color);
+                        *depth = this_depth;
+                    }
                 };
             }
         }
