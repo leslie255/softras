@@ -1,4 +1,7 @@
-use std::time::SystemTime;
+use std::{
+    fmt::Write as _,
+    time::{Instant, SystemTime},
+};
 
 use bytemuck::{Pod, Zeroable};
 use glam::*;
@@ -29,9 +32,12 @@ pub struct Game {
     depth_buffer: Vec<f32>,
     frame_width: u32,
     frame_height: u32,
+    overlay_text: String,
 
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
+
+    fps_counter: FpsMeter,
 }
 
 impl Default for Game {
@@ -49,8 +55,10 @@ impl Game {
             depth_buffer: Vec::new(),
             frame_width: 0,
             frame_height: 0,
+            overlay_text: String::new(),
             key_states: [false; _],
             cursor_position: None,
+            fps_counter: FpsMeter::new(),
         }
     }
 
@@ -67,12 +75,17 @@ impl Game {
     }
 
     pub fn frame(&mut self) -> FrameOutput<'_> {
+        let before = Instant::now();
         self.draw();
+        let after = Instant::now();
+        let frame_time = (after - before).as_secs_f64();
+        self.fps_counter.new_frame_time(frame_time);
+        self.update_overlay_text();
         FrameOutput {
             display_buffer: bytemuck::cast_slice(&self.frame_buffer),
             display_width: self.frame_width,
             display_height: self.frame_height,
-            overlay_text: "SOFTRAS v0.0.0",
+            overlay_text: &self.overlay_text,
             captures_cursor: false,
         }
     }
@@ -180,6 +193,17 @@ impl Game {
         self.key_is_down(KeyCode::ShiftLeft) || self.key_is_down(KeyCode::ShiftRight)
     }
 
+    fn update_overlay_text(&mut self) {
+        self.overlay_text.clear();
+        _ = writeln!(&mut self.overlay_text, "SOFTWARE RASTERIZER v0.0.0");
+        match self.fps_counter.average_fps() {
+            Some(avarage_fps) => {
+                _ = writeln!(&mut self.overlay_text, "FPS (average): {:.0}", avarage_fps)
+            }
+            None => _ = writeln!(&mut self.overlay_text, "FPS (average): **"),
+        };
+    }
+
     fn draw(&mut self) {
         let background_color = Rgb::from_hex(0x040404);
         let n_pixels = self.frame_width as usize * self.frame_height as usize;
@@ -202,10 +226,9 @@ impl Game {
             light_direction: vec3(-1., -1., -1.),
             ..BasicShader::default()
         };
-        let shader: &dyn Shader = &shader;
         for indices in Self::CUBE_INDICIES {
             let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-            self.draw_triangle(triangle, model, shader);
+            self.draw_triangle(triangle, model, &shader);
         }
     }
 
@@ -270,11 +293,8 @@ fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     let area_bcp = signed_area(b, c, p);
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
-    let sign_bcp = area_bcp >= 0.;
-    let sign_cap = area_cap >= 0.;
-    let sign_abp = area_abp >= 0.;
     let area_total = area_bcp + area_cap + area_abp;
-    if sign_bcp && sign_cap && sign_abp && area_total > f32::EPSILON {
+    if area_bcp >= 0. && area_cap >= 0. && area_abp >= 0. && area_total > f32::EPSILON {
         // Inside.
         let inv_area_total = 1. / area_total;
         Some([
@@ -351,5 +371,49 @@ impl Shader for BasicShader {
             b: self.color.b + self.shading_intensity * (shading - 0.5),
         }
         .into()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FpsMeter {
+    window: [f64; 24],
+    cursor: usize,
+    frame_time: Option<f64>,
+}
+
+impl Default for FpsMeter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FpsMeter {
+    const fn new() -> Self {
+        Self {
+            window: [0.; _],
+            cursor: 0,
+            frame_time: None,
+        }
+    }
+
+    fn new_frame_time(&mut self, frame_time: f64) {
+        let i = self.cursor;
+        self.cursor += 1;
+        self.cursor %= self.window.len();
+        self.window[i] = frame_time;
+        let frame_time = self.window.iter().sum::<f64>() / 24.;
+        match &mut self.frame_time {
+            Some(frame_time_) => *frame_time_ = frame_time,
+            frame_time_ @ None if self.cursor == 0 => *frame_time_ = Some(frame_time),
+            None => (),
+        }
+    }
+
+    fn average_frame_time(&self) -> Option<f64> {
+        self.frame_time
+    }
+
+    fn average_fps(&self) -> Option<f64> {
+        self.average_frame_time().map(|f| 1. / f)
     }
 }
