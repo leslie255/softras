@@ -196,7 +196,10 @@ impl Game {
     fn update_overlay_text(&mut self) {
         self.overlay_text.clear();
         let crate_version = env!("CARGO_PKG_VERSION");
-        _ = writeln!(&mut self.overlay_text, "SOFTWARE RASTERIZER v{crate_version}");
+        _ = writeln!(
+            &mut self.overlay_text,
+            "SOFTWARE RASTERIZER v{crate_version}"
+        );
         match self.fps_counter.average_fps() {
             Some(avarage_fps) => {
                 _ = writeln!(&mut self.overlay_text, "FPS (average): {:.0}", avarage_fps)
@@ -216,12 +219,26 @@ impl Game {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0.0f64, |duration| duration.as_secs_f64())
             % 86400.) as f32;
-        let size = 0.5 * f32::min(self.frame_width as f32, self.frame_height as f32);
-        let size = vec3(size, size, size);
+        let size = {
+            let size = 40.;
+            vec3(size, size, size)
+        };
         let model = Mat4::from_rotation_x(t)
             * Mat4::from_rotation_z(t)
             * Mat4::from_translation(-0.5 * size)
             * Mat4::from_scale(size);
+        let view = Mat4::look_to_rh(
+            vec3(0., 0., 100.),
+            vec3(0., 0., -1.).normalize(),
+            vec3(0., 1., 0.),
+        );
+        let model_view = view * model;
+        let projection = Mat4::perspective_rh(
+            90.0f32.to_radians(),                               // fov_y_radians
+            self.frame_width as f32 / self.frame_height as f32, // aspect_ratio
+            0.1,                                                // z_near
+            500.0,                                              // z_far
+        );
         let shader = BasicShader {
             color: Rgb::from_hex(0x008080),
             light_direction: vec3(-1., -1., -1.),
@@ -229,53 +246,64 @@ impl Game {
         };
         for indices in Self::CUBE_INDICIES {
             let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-            self.draw_triangle(triangle, model, &shader);
+            self.draw_triangle(triangle, projection, model_view, &shader);
         }
     }
 
     fn draw_triangle<S: Shader + ?Sized>(
         &mut self,
         triangle_local: [Vertex; 3],
-        model: Mat4,
+        projection: Mat4,
+        model_view: Mat4,
         shader: &S,
     ) {
-        let triangle = triangle_local.map(|v| Vertex {
-            position: model.transform_point3(v.position),
-            ..v
+        let mvp = projection * model_view;
+        let triangle = triangle_local.map(|vertex| {
+            let clip = mvp * vertex.position.extend(1.);
+            let depth = clip.w;
+            Vertex {
+                position: { clip.xyz() / depth },
+                normal: (model_view.transform_vector3(vertex.normal) * depth)
+                    .normalize_or(vec3(1., 0., 0.)),
+                ..vertex
+            }
         });
         for x_pixel in 0..self.frame_width {
             for y_pixel in 0..self.frame_height {
                 let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
                 let coord = vec2(
-                    x_pixel as f32 - 0.5 * (self.frame_width as f32), //
-                    -(y_pixel as f32) + 0.5 * (self.frame_height as f32), //
-                );
+                    x_pixel as f32 / self.frame_width as f32,
+                    y_pixel as f32 / self.frame_height as f32,
+                )
+                .map(|f| f * 2. - 1.);
                 let rasterize_result = rasterize(triangle.map(|v| v.position.xy()), coord);
                 let Some(weights) = rasterize_result else {
                     continue;
                 };
                 let this_depth = triangular_interpolate(weights, triangle.map(|v| v.position.z));
+                if !(0.0..=1.0).contains(&this_depth) {
+                    continue;
+                }
                 let depth = &mut self.depth_buffer[i_pixel];
                 if *depth <= this_depth {
                     continue;
                 }
+                *depth = this_depth;
                 let fragment_input = FragmentInput {
                     position: vec3(coord.x, coord.y, this_depth),
+                    depth: this_depth,
                     uv: vec2(
                         triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
                         triangular_interpolate(weights, triangle.map(|v| v.uv.y)),
                     ),
-                    normal: model
-                        .transform_vector3(vec3(
-                            triangular_interpolate(weights, triangle.map(|v| v.normal.x)),
-                            triangular_interpolate(weights, triangle.map(|v| v.normal.y)),
-                            triangular_interpolate(weights, triangle.map(|v| v.normal.z)),
-                        ))
-                        .normalize_or(vec3(0., 0., 1.)),
+                    normal: vec3(
+                        triangular_interpolate(weights, triangle.map(|v| v.normal.x)),
+                        triangular_interpolate(weights, triangle.map(|v| v.normal.y)),
+                        triangular_interpolate(weights, triangle.map(|v| v.normal.z)),
+                    ),
                 };
                 let fragment_result = shader.fragment(fragment_input);
                 self.frame_buffer[i_pixel] = RgbaU8::from(fragment_result);
-                *depth = this_depth;
             }
         }
     }
@@ -335,6 +363,7 @@ impl Vertex {
 #[repr(C)]
 struct FragmentInput {
     position: Vec3,
+    depth: f32,
     uv: Vec2,
     normal: Vec3,
 }
@@ -362,6 +391,12 @@ impl Default for BasicShader {
 
 impl Shader for BasicShader {
     fn fragment(&self, input: FragmentInput) -> Rgba {
+        // Rgba {
+        //     r: input.depth,
+        //     g: input.depth,
+        //     b: input.depth,
+        //     a: 1.,
+        // }
         let normal = input.normal.normalize_or(vec3(1., 0., 0.));
         let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
         let theta = f32::acos(normal.dot(light_direction));
