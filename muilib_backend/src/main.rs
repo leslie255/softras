@@ -92,7 +92,7 @@ impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<
     fn new(resources: &'cx muilib::AppResources, event_loop: &ActiveEventLoop) -> Self {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Software Raytracing"))
+                .create_window(Window::default_attributes().with_title("Software Rasterizer"))
                 .unwrap(),
         );
 
