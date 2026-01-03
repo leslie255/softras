@@ -22,12 +22,14 @@ pub struct FrameOutput<'game> {
 
 /// The main game state struct.
 pub struct Game {
-    frame_buffer: Vec<RgbaPixel>,
+    frame_buffer: Vec<RgbaU8>,
     frame_width: u32,
     frame_height: u32,
 
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
+
+    triangle: [Vec3; 3],
 }
 
 impl Default for Game {
@@ -44,6 +46,11 @@ impl Game {
             frame_height: 0,
             key_states: [false; _],
             cursor_position: None,
+            triangle: [
+                vec3(0., 120., 0.),     //
+                vec3(-100., -100., 0.), //
+                vec3(100., -100., 0.),  //
+            ],
         }
     }
 
@@ -60,7 +67,7 @@ impl Game {
     }
 
     pub fn frame(&mut self) -> FrameOutput<'_> {
-        self.draw_frame();
+        self.draw();
         FrameOutput {
             display_buffer: bytemuck::cast_slice(&self.frame_buffer),
             display_width: self.frame_width,
@@ -70,42 +77,42 @@ impl Game {
         }
     }
 
-    pub fn resize_display(&mut self, width: u32, height: u32) {
+    pub fn notify_display_resize(&mut self, width: u32, height: u32) {
         self.frame_width = width;
         self.frame_height = height;
     }
 
-    pub fn key_down(&mut self, key_code: KeyCode) {
+    pub fn notify_key_down(&mut self, key_code: KeyCode) {
         self.key_states[key_code as usize] = true;
     }
 
-    pub fn key_up(&mut self, key_code: KeyCode) {
+    pub fn notify_key_up(&mut self, key_code: KeyCode) {
         self.key_states[key_code as usize] = false;
     }
 
-    pub fn cursor_moved(&mut self, x: f32, y: f32) {
+    pub fn notify_cursor_moved(&mut self, x: f32, y: f32) {
         self.cursor_position = Some(vec2(x, y));
     }
 
-    pub fn cursor_entered(&mut self) {}
+    pub fn notify_cursor_entered(&mut self) {}
 
-    pub fn cursor_left(&mut self) {
+    pub fn notify_cursor_left(&mut self) {
         self.cursor_position = None;
     }
 
-    pub fn cursor_scrolled_lines(&mut self, x: f32, y: f32) {
+    pub fn notify_cursor_scrolled_lines(&mut self, x: f32, y: f32) {
         _ = x;
         _ = y;
     }
 
-    pub fn cursor_scrolled_pixels(&mut self, x: f32, y: f32) {
+    pub fn notify_cursor_scrolled_pixels(&mut self, x: f32, y: f32) {
         _ = x;
         _ = y;
     }
 
-    pub fn focused(&mut self) {}
+    pub fn notify_focused(&mut self) {}
 
-    pub fn unfocused(&mut self) {
+    pub fn notify_unfocused(&mut self) {
         bytemuck::fill_zeroes(&mut self.key_states);
     }
 
@@ -128,29 +135,59 @@ impl Game {
         self.key_is_down(KeyCode::ShiftLeft) || self.key_is_down(KeyCode::ShiftRight)
     }
 
-    fn draw_frame(&mut self) {
+    fn draw(&mut self) {
+        let background_color = Rgb::from_hex(0x040404);
         self.frame_buffer.resize(
             self.frame_width as usize * self.frame_height as usize,
-            Srgba::from_hex(0xFFFFFFFF).into(),
+            RgbaU8::from(background_color),
         );
 
-        let (color0, color1) = match self.super_is_down() {
-            true => (Srgb::from_hex(0xFFFFFF), Srgb::from_hex(0x0000FF)),
-            false => (Srgb::from_hex(0xFFFFFF), Srgb::from_hex(0x800080)),
-        };
-        for x in 0..self.frame_width {
-            for y in 0..self.frame_height {
-                let mut t = match self.shift_is_down() {
-                    true => x as f32 / self.frame_width as f32,
-                    false => y as f32 / self.frame_height as f32,
+        for x_pixel in 0..self.frame_width {
+            for y_pixel in 0..self.frame_height {
+                let coord = vec2(
+                    x_pixel as f32 - 0.5 * (self.frame_width as f32), //
+                    -(y_pixel as f32) + 0.5 * (self.frame_height as f32), //
+                );
+                let mut color = background_color;
+                if rasterize(self.triangle, coord).is_some() {
+                    color = Rgb::from_hex(0x008080);
                 };
-                if self.alt_is_down() {
-                    t = 1. - t;
+                if coord.distance_squared(vec2(0., 0.)) < 8.0f32.powi(2) {
+                    color = Rgb::from_hex(0xFFFFFF);
                 }
-                let color = Srgb::lerp(color0, color1, t);
-                let i_pixel = y as usize * self.frame_width as usize + x as usize;
-                self.frame_buffer[i_pixel] = Srgba::from(color).into();
+                let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
+                self.frame_buffer[i_pixel] = RgbaU8::from(color);
             }
         }
+    }
+}
+
+/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
+/// returns the triangular-interpolated value between `a.z`, `b.z`, and `c.z` (returns
+/// `None` otherwise).
+fn rasterize([a, b, c]: [Vec3; 3], p: Vec2) -> Option<f32> {
+    fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
+        0.5 * (c - a).dot((b - a).perp())
+    }
+    let (a_z, a) = (a.z, a.xy());
+    let (b_z, b) = (b.z, b.xy());
+    let (c_z, c) = (c.z, c.xy());
+    let area_bcp = signed_area(b, c, p);
+    let area_cap = signed_area(c, a, p);
+    let area_abp = signed_area(a, b, p);
+    let sign_bcp = area_bcp > 0.;
+    let sign_cap = area_cap > 0.;
+    let sign_abp = area_abp > 0.;
+    if sign_bcp == sign_cap && sign_cap == sign_abp {
+        // Inside.
+        let inv_area_total = 1. / (area_bcp + area_cap + area_abp);
+        Some(
+            inv_area_total * area_bcp * a_z
+                + inv_area_total * area_cap * b_z
+                + inv_area_total * area_abp * c_z,
+        )
+    } else {
+        // Outside.
+        None
     }
 }

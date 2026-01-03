@@ -137,7 +137,7 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     self.window.scale_factor(),
                     None,
                 );
-                self.game.resize_display(size.width, size.height);
+                self.game.notify_display_resize(size.width, size.height);
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -152,29 +152,29 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     PhysicalKey::Unidentified(_) => softras::KeyCode::Unidentified,
                 };
                 if event.state.is_pressed() {
-                    self.game.key_down(key_code);
+                    self.game.notify_key_down(key_code);
                 } else {
-                    self.game.key_up(key_code);
+                    self.game.notify_key_up(key_code);
                 }
             }
             WindowEvent::CursorEntered { device_id: _ } => {
-                self.game.cursor_entered();
+                self.game.notify_cursor_entered();
             }
             WindowEvent::CursorLeft { device_id: _ } => {
-                self.game.cursor_left();
+                self.game.notify_cursor_left();
             }
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
             } => {
-                self.game.cursor_moved(position.x as f32, position.y as f32);
+                self.game.notify_cursor_moved(position.x as f32, position.y as f32);
             }
             WindowEvent::MouseWheel {
                 device_id: _,
                 delta: MouseScrollDelta::LineDelta(x, y),
                 phase: _,
             } => {
-                self.game.cursor_scrolled_lines(x, y);
+                self.game.notify_cursor_scrolled_lines(x, y);
             }
             WindowEvent::MouseWheel {
                 device_id: _,
@@ -182,10 +182,10 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 phase: _,
             } => {
                 self.game
-                    .cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
+                    .notify_cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
             }
-            WindowEvent::Focused(true) => self.game.focused(),
-            WindowEvent::Focused(false) => self.game.unfocused(),
+            WindowEvent::Focused(true) => self.game.notify_focused(),
+            WindowEvent::Focused(false) => self.game.notify_unfocused(),
             _ => (),
         }
     }
