@@ -12,6 +12,9 @@ pub use key_code::*;
 mod color;
 use crate::color::*;
 
+mod shader;
+use crate::shader::*;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FrameOutput<'game> {
     pub display_buffer: &'game [u8],
@@ -302,14 +305,17 @@ impl Game {
                         false => -rotation_speed,
                     };
                     let size_vec3 = vec3(size, size, size);
-                    let shader = BasicShader {
+                    // let shader = DepthVisualizationShader {
+                    //     z_min: 0.,
+                    //     z_max: 1.,
+                    // };
+                    let shader = Basic3dShader {
                         color,
-                        light_direction: vec3(-1., -1., -1.).normalize(),
-                        ..BasicShader::default()
+                        ..Default::default()
                     };
                     let model = Mat4::from_translation(position)
-                        * Mat4::from_rotation_x(t * rotation_speed)
-                        * Mat4::from_rotation_z(t * rotation_speed)
+                        // * Mat4::from_rotation_x(t * rotation_speed)
+                        // * Mat4::from_rotation_z(t * rotation_speed)
                         * Mat4::from_translation(-0.5 * size_vec3)
                         * Mat4::from_scale(size_vec3);
                     let model_view = view * model;
@@ -333,25 +339,16 @@ impl Game {
         let triangle = triangle_local.map(|vertex| {
             let clip = mvp * vertex.position.extend(1.);
             Vertex {
-                position: { clip.xyz() / clip.w },
+                position: clip.xyz() / clip.w,
                 normal: (model_view.transform_vector3(vertex.normal) * clip.w)
                     .normalize_or(vec3(1., 0., 0.)),
                 ..vertex
             }
         });
-        // if triangle.map(|vertex| vertex.position.z < 1.) == [true; 3] {
-        //     return;
-        // }
-        if triangle.map(|vertex| vertex.position.x < -1.) == [true; 3] {
+        if triangle.map(|vertex| vertex.position.z < 0.) == [true; 3] {
             return;
         }
-        if triangle.map(|vertex| vertex.position.x > 1.) == [true; 3] {
-            return;
-        }
-        if triangle.map(|vertex| vertex.position.y < -1.) == [true; 3] {
-            return;
-        }
-        if triangle.map(|vertex| vertex.position.y > 1.) == [true; 3] {
+        if triangle.map(|vertex| vertex.position.z > 1.) == [true; 3] {
             return;
         }
         if !is_clockwise_winding(triangle.map(|vertex| vertex.position.xy())) {
@@ -383,18 +380,21 @@ impl Game {
                 let Some(weights) = rasterize_result else {
                     continue;
                 };
-                let this_depth = triangular_interpolate(weights, triangle.map(|v| v.position.z));
-                // if this_depth < 1. {
-                //     continue;
-                // }
-                let depth = &mut self.depth_buffer[i_pixel];
-                if *depth <= this_depth {
+                let z = triangular_interpolate(weights, triangle.map(|v| v.position.z));
+                if !(-1.0..1.0).contains(&ndc.x)
+                    || !(-1.0..1.0).contains(&ndc.y)
+                    || !(0.0..1.0).contains(&z)
+                {
                     continue;
                 }
-                *depth = this_depth;
+                let depth = &mut self.depth_buffer[i_pixel];
+                if *depth <= z {
+                    continue;
+                }
+                *depth = z;
                 let fragment_input = FragmentInput {
-                    position: vec3(ndc.x, ndc.y, this_depth),
-                    depth: this_depth,
+                    position: vec3(ndc.x, ndc.y, z),
+                    depth: z,
                     uv: vec2(
                         triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
                         triangular_interpolate(weights, triangle.map(|v| v.uv.y)),
@@ -453,9 +453,10 @@ impl Game {
         if self.is_paused {
             return;
         }
-        self.camera.yaw_degrees += 0.1 * delta.x;
-        self.camera.pitch_degrees -= 0.1 * delta.y;
-        self.camera.pitch_degrees = self.camera.pitch_degrees.clamp(-89.99, 89.99);
+        let sensitivity = 1. / 11.;
+        self.camera.yaw_degrees += sensitivity * delta.x;
+        self.camera.pitch_degrees -= sensitivity * delta.y;
+        self.camera.pitch_degrees = self.camera.pitch_degrees.clamp(-90. + 0.0001, 90. - 0.0001);
         if self.camera.yaw_degrees <= -180. {
             self.camera.yaw_degrees += 360.;
         } else if self.camera.yaw_degrees >= 180. {
@@ -507,10 +508,7 @@ fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
     let area_total = area_bcp + area_cap + area_abp;
-    if (area_bcp > 0.) == (area_cap > 0.)
-        && (area_cap > 0.) == (area_abp > 0.)
-        && area_total > f32::EPSILON
-    {
+    if (area_bcp > 0.) == (area_cap > 0.) && (area_cap > 0.) == (area_abp > 0.) {
         // Inside.
         let inv_area_total = 1. / area_total;
         Some([
@@ -543,51 +541,6 @@ impl Vertex {
             uv: vec2(u, v),
             normal: vec3(x_normal, y_normal, z_normal),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
-#[repr(C)]
-struct FragmentInput {
-    position: Vec3,
-    depth: f32,
-    uv: Vec2,
-    normal: Vec3,
-}
-
-trait Shader {
-    fn fragment(&self, input: FragmentInput) -> Rgba;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct BasicShader {
-    color: Rgb,
-    light_direction: Vec3,
-    shading_intensity: f32,
-}
-
-impl Default for BasicShader {
-    fn default() -> Self {
-        Self {
-            color: Rgb::from_hex(0x008080),
-            light_direction: vec3(1., 1., 1.).normalize(),
-            shading_intensity: 0.8,
-        }
-    }
-}
-
-impl Shader for BasicShader {
-    fn fragment(&self, input: FragmentInput) -> Rgba {
-        let normal = input.normal.normalize_or(vec3(1., 0., 0.));
-        let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
-        let theta = f32::acos(normal.dot(light_direction));
-        let shading = theta / (2. * std::f32::consts::PI);
-        Rgb {
-            r: self.color.r + self.shading_intensity * (shading - 0.5),
-            g: self.color.g + self.shading_intensity * (shading - 0.5),
-            b: self.color.b + self.shading_intensity * (shading - 0.5),
-        }
-        .into()
     }
 }
 
@@ -630,11 +583,38 @@ impl Camera {
     }
 
     pub fn projection_matrix(self, frame_width: f32, frame_height: f32) -> Mat4 {
-        Mat4::perspective_rh(
-            self.fov_y_degrees.to_radians(), // fov_y_radians
-            frame_width / frame_height,      // aspect_ratio
-            0.1,                             // z_near
-            100.0,                           // z_far
+        let aspect = frame_width / frame_height;
+        let fovy = self.fov_y_degrees.to_radians();
+        let near = 0.1;
+        let far = 100.;
+
+        let f = 1. / f32::tan(fovy / 2.);
+
+        let c0r0 = f / aspect;
+        let c0r1 = 0.;
+        let c0r2 = 0.;
+        let c0r3 = 0.;
+
+        let c1r0 = 0.;
+        let c1r1 = f;
+        let c1r2 = 0.;
+        let c1r3 = 0.;
+
+        let c2r0 = 0.;
+        let c2r1 = 0.;
+        let c2r2 = (far + near) / (near - far);
+        let c2r3 = -1.;
+
+        let c3r0 = 0.;
+        let c3r1 = 0.;
+        let c3r2 = (2. * far * near) / (near - far);
+        let c3r3 = 0.;
+
+        mat4(
+            vec4(c0r0, c0r1, c0r2, c0r3),
+            vec4(c1r0, c1r1, c1r2, c1r3),
+            vec4(c2r0, c2r1, c2r2, c2r3),
+            vec4(c3r0, c3r1, c3r2, c3r3),
         )
     }
 }

@@ -60,7 +60,7 @@ impl<'cx> App<'cx> {
         self.overlay_text_view
             .set_text(String::from(frame_output.overlay_text));
         self.uicx
-            .prepare_view(&canvas, point2(10., 10.), &mut self.overlay_text_view);
+            .prepare_view(&canvas, point2(4., 4.), &mut self.overlay_text_view);
         self.uicx
             .draw_view(&mut render_pass, &self.overlay_text_view);
 
@@ -102,7 +102,7 @@ impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<
         Self {
             canvas,
             overlay_text_view: muilib::TextView::new(&uicx)
-                .with_font_size(18.)
+                .with_font_size(16.)
                 .with_bg_color(Srgba::from_hex(0x80808080)),
             image_view: muilib::ImageView::new(RectSize::new(480., 320.)),
             game: softras::Game::new(),
@@ -141,8 +141,11 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 );
                 let width_f = size.width as f32;
                 let height_f = size.height as f32;
-                let preferred_width = 800.0f32.min(width_f);
-                let preferred_height = 600.0f32.min(height_f);
+                let preferred_width: f32 = match cfg!(debug_assertions) {
+                    true => 240.,
+                    false => 800.,
+                };
+                let preferred_height = 0.75 * preferred_width;
                 let (width, height) = match width_f > height_f {
                     true => (preferred_width, preferred_width / width_f * height_f),
                     false => (preferred_height / height_f * width_f, preferred_height),
@@ -194,11 +197,14 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 self.game
                     .notify_cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
             }
-            WindowEvent::Focused(true) => self.game.notify_focused(),
+            WindowEvent::Focused(true) => {
+                self.game.notify_focused();
+                self.window.request_redraw();
+            }
             WindowEvent::Focused(false) => {
                 self.cursor_position = None;
                 self.game.notify_unfocused();
-            },
+            }
             _ => (),
         }
     }
