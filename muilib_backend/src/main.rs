@@ -5,7 +5,7 @@ use muilib::{
     cgmath::*,
     winit::{
         application::ApplicationHandler,
-        event::{MouseScrollDelta, WindowEvent},
+        event::{DeviceEvent, DeviceId, MouseScrollDelta, WindowEvent},
         event_loop::{ActiveEventLoop, EventLoop},
         keyboard::PhysicalKey,
         window::{CursorGrabMode, Window, WindowId},
@@ -32,6 +32,7 @@ struct App<'cx> {
     image_view: muilib::ImageView,
     overlay_text_view: muilib::TextView<'cx>,
     cursor_captured: bool,
+    cursor_position: Option<Vector2<f32>>,
 }
 
 impl<'cx> App<'cx> {
@@ -108,6 +109,7 @@ impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<
             uicx,
             window,
             cursor_captured: false,
+            cursor_position: None,
         }
     }
 }
@@ -137,8 +139,14 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     self.window.scale_factor(),
                     None,
                 );
-                let width = 480.0f32;
-                let height = width / size.width as f32 * size.height as f32;
+                let width_f = size.width as f32;
+                let height_f = size.height as f32;
+                let preferred_width = 800.0f32.min(width_f);
+                let preferred_height = 600.0f32.min(height_f);
+                let (width, height) = match width_f > height_f {
+                    true => (preferred_width, preferred_width / width_f * height_f),
+                    false => (preferred_height / height_f * width_f, preferred_height),
+                };
                 self.game.notify_display_resize(width as u32, height as u32);
             }
             WindowEvent::CloseRequested => {
@@ -169,8 +177,7 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 device_id: _,
                 position,
             } => {
-                self.game
-                    .notify_cursor_moved(position.x as f32, position.y as f32);
+                self.cursor_position = Some(vec2(position.x as f32, position.y as f32));
             }
             WindowEvent::MouseWheel {
                 device_id: _,
@@ -188,8 +195,24 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     .notify_cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
             }
             WindowEvent::Focused(true) => self.game.notify_focused(),
-            WindowEvent::Focused(false) => self.game.notify_unfocused(),
+            WindowEvent::Focused(false) => {
+                self.cursor_position = None;
+                self.game.notify_unfocused();
+            },
             _ => (),
+        }
+    }
+
+    fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event
+            && let Some(cursor_position) = self.cursor_position
+        {
+            self.game.notify_cursor_moved(
+                cursor_position.x,
+                cursor_position.y,
+                delta.0 as f32,
+                delta.1 as f32,
+            );
         }
     }
 }

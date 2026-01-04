@@ -1,6 +1,6 @@
 use std::{
     fmt::Write as _,
-    time::{Duration, Instant, SystemTime},
+    time::{Instant, SystemTime},
 };
 
 use bytemuck::{Pod, Zeroable};
@@ -37,11 +37,7 @@ pub struct Game {
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
 
-    fps_meter: FpsMeter,
-
-    camera: Camera,
-    previous_frame_instant: Option<Instant>,
-    is_paused: bool,
+    fps_counter: FpsMeter,
 }
 
 impl Default for Game {
@@ -62,15 +58,7 @@ impl Game {
             overlay_text: String::new(),
             key_states: [false; _],
             cursor_position: None,
-            fps_meter: FpsMeter::new(),
-            camera: Camera {
-                position: vec3(0., 0., 20.),
-                pitch_degrees: 0.,
-                yaw_degrees: 0.,
-                fov_y_degrees: 90.,
-            },
-            previous_frame_instant: None,
-            is_paused: false,
+            fps_counter: FpsMeter::new(),
         }
     }
 
@@ -87,26 +75,18 @@ impl Game {
     }
 
     pub fn frame(&mut self) -> FrameOutput<'_> {
-        let before_frame = Instant::now();
-        if let Some(previous_frame_instant) = self.previous_frame_instant {
-            self.move_player(before_frame.duration_since(previous_frame_instant));
-        }
-        self.previous_frame_instant = Some(before_frame);
-
+        let before = Instant::now();
         self.draw();
-
-        let after_frame = Instant::now();
-        let frame_time = (after_frame - before_frame).as_secs_f64();
-        self.fps_meter.new_frame_time(frame_time);
-
+        let after = Instant::now();
+        let frame_time = (after - before).as_secs_f64();
+        self.fps_counter.new_frame_time(frame_time);
         self.update_overlay_text();
-
         FrameOutput {
             display_buffer: bytemuck::cast_slice(&self.frame_buffer),
             display_width: self.frame_width,
             display_height: self.frame_height,
             overlay_text: &self.overlay_text,
-            captures_cursor: !self.is_paused,
+            captures_cursor: false,
         }
     }
 
@@ -123,9 +103,8 @@ impl Game {
         self.key_states[key_code as usize] = false;
     }
 
-    pub fn notify_cursor_moved(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+    pub fn notify_cursor_moved(&mut self, x: f32, y: f32) {
         self.cursor_position = Some(vec2(x, y));
-        self.rotation_player(vec2(dx, dy));
     }
 
     pub fn notify_cursor_entered(&mut self) {}
@@ -216,53 +195,21 @@ impl Game {
 
     fn update_overlay_text(&mut self) {
         self.overlay_text.clear();
-
-        // Name and Version.
         let crate_version = env!("CARGO_PKG_VERSION");
         _ = writeln!(
             &mut self.overlay_text,
             "SOFTWARE RASTERIZER v{crate_version}"
         );
-
-        // Resolution.
-        _ = writeln!(
-            &mut self.overlay_text,
-            "resolution: {}x{}",
-            self.frame_width, self.frame_height,
-        );
-
-        // FPS.
         _ = write!(&mut self.overlay_text, "FPS: ");
-        match self.fps_meter.fps() {
+        match self.fps_counter.fps() {
             Some(fps) => _ = write!(&mut self.overlay_text, "{:3.0}", fps),
-            None => _ = write!(&mut self.overlay_text, "***"),
+            None => _ = write!(&mut self.overlay_text, "**"),
         };
         _ = write!(&mut self.overlay_text, ", avg over 48: ");
-        match self.fps_meter.average_fps() {
+        match self.fps_counter.average_fps() {
             Some(avarage_fps) => _ = writeln!(&mut self.overlay_text, "{:3.0}", avarage_fps),
-            None => _ = writeln!(&mut self.overlay_text, "***"),
+            None => _ = writeln!(&mut self.overlay_text, "**"),
         };
-
-        // Camera position/direction.
-        _ = writeln!(
-            &mut self.overlay_text,
-            "camera x/y/z: {:.04}/{:.04}/{:.04}",
-            self.camera.position.x, self.camera.position.y, self.camera.position.z,
-        );
-
-        // Camera position/direction.
-        _ = writeln!(
-            &mut self.overlay_text,
-            "camera pitch/yaw: {:.04}/{:.04}",
-            self.camera.pitch_degrees, self.camera.yaw_degrees,
-        );
-
-        // Camera position/direction.
-        _ = writeln!(
-            &mut self.overlay_text,
-            "camera FOV: {:.04}",
-            self.camera.fov_y_degrees,
-        );
     }
 
     fn draw(&mut self) {
@@ -276,25 +223,32 @@ impl Game {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0.0f64, |duration| duration.as_secs_f64())
             % 86400.) as f32;
-        let view = self.camera.view_matrix();
-        let projection = self
-            .camera
-            .projection_matrix(self.frame_width as f32, self.frame_height as f32);
+        let view = Mat4::look_to_rh(
+            vec3(0., 0., 200.),            // eye
+            vec3(0., 0., -1.).normalize(), // dir
+            vec3(0., 1., 0.),              // up
+        );
+        let projection = Mat4::perspective_rh(
+            60.0f32.to_radians(),                               // fov_y_radians
+            self.frame_width as f32 / self.frame_height as f32, // aspect_ratio
+            0.1,                                                // z_near
+            100.0,                                              // z_far
+        );
 
         let cubes: [(Vec3, f32, Rgb, f32); _] = [
             // position, size, color, rotation speed
-            (vec3(-15., 0., 0.), 3., Rgb::from_hex(0x008080), -2.0f32),
-            (vec3(-5., 0., 0.), 5., Rgb::from_hex(0xA06000), 0.5f32),
-            (vec3(5., 0., 0.), 4., Rgb::from_hex(0x00A060), -1.0f32),
-            (vec3(15., 0., 0.), 3., Rgb::from_hex(0x800080), 1.5f32),
+            (vec3(-150., 0., 0.), 30., Rgb::from_hex(0x008080), -2.0f32),
+            (vec3(-50., 0., 0.), 50., Rgb::from_hex(0xA06000), 0.5f32),
+            (vec3(50., 0., 0.), 40., Rgb::from_hex(0x00A060), -1.0f32),
+            (vec3(150., 0., 0.), 35., Rgb::from_hex(0x800080), 1.5f32),
         ];
 
-        for y_repeat in -1i32..=2i32 {
-            for z_repeat in -3i32..=0i32 {
+        for y_repeat in -2i32..=2i32 {
+            for z_repeat in -4i32..=0i32 {
                 for (position, size, color, rotation_speed) in cubes {
                     let position = Vec3 {
-                        y: y_repeat as f32 * 10.,
-                        z: z_repeat as f32 * 10.,
+                        y: y_repeat as f32 * 100.,
+                        z: z_repeat as f32 * 100.,
                         ..position
                     };
                     let rotation_speed = match z_repeat % 2 == 0 {
@@ -339,19 +293,7 @@ impl Game {
                 ..vertex
             }
         });
-        // if triangle.map(|vertex| vertex.position.z < 1.) == [true; 3] {
-        //     return;
-        // }
-        if triangle.map(|vertex| vertex.position.x < -1.) == [true; 3] {
-            return;
-        }
-        if triangle.map(|vertex| vertex.position.x > 1.) == [true; 3] {
-            return;
-        }
-        if triangle.map(|vertex| vertex.position.y < -1.) == [true; 3] {
-            return;
-        }
-        if triangle.map(|vertex| vertex.position.y > 1.) == [true; 3] {
+        if triangle.map(|vertex| vertex.position.z < 1.) == [true; 3] {
             return;
         }
         if !is_clockwise_winding(triangle.map(|vertex| vertex.position.xy())) {
@@ -384,9 +326,9 @@ impl Game {
                     continue;
                 };
                 let this_depth = triangular_interpolate(weights, triangle.map(|v| v.position.z));
-                // if this_depth < 1. {
-                //     continue;
-                // }
+                if this_depth < 1. {
+                    continue;
+                }
                 let depth = &mut self.depth_buffer[i_pixel];
                 if *depth <= this_depth {
                     continue;
@@ -408,58 +350,6 @@ impl Game {
                 let fragment_result = shader.fragment(fragment_input);
                 self.frame_buffer[i_pixel] = RgbaU8::from(fragment_result);
             }
-        }
-    }
-
-    fn move_player(&mut self, frame_duration: Duration) {
-        if self.is_paused {
-            return;
-        }
-        let mut movement = vec3(0., 0., 0.);
-        if self.key_is_down(KeyCode::KeyW) {
-            movement.z += 1.;
-        }
-        if self.key_is_down(KeyCode::KeyS) {
-            movement.z -= 1.;
-        }
-        if self.key_is_down(KeyCode::KeyA) {
-            movement.x -= 1.;
-        }
-        if self.key_is_down(KeyCode::KeyD) {
-            movement.x += 1.;
-        }
-        if self.key_is_down(KeyCode::Space) {
-            movement.y += 1.;
-        }
-        if self.key_is_down(KeyCode::KeyR) || self.key_is_down(KeyCode::ShiftLeft) {
-            movement.y -= 1.;
-        }
-        movement = 8. * movement.normalize();
-        if movement.x.is_nan() | movement.y.is_nan() | movement.z.is_nan() {
-            return;
-        }
-        if self.key_is_down(KeyCode::ControlLeft) && movement.z > 0. {
-            movement.z *= 2.;
-        }
-        if self.key_is_down(KeyCode::F3) {
-            movement *= 32.;
-        }
-        movement *= frame_duration.as_secs_f32();
-
-        self.camera.move_(movement);
-    }
-
-    fn rotation_player(&mut self, delta: Vec2) {
-        if self.is_paused {
-            return;
-        }
-        self.camera.yaw_degrees += 0.1 * delta.x;
-        self.camera.pitch_degrees -= 0.1 * delta.y;
-        self.camera.pitch_degrees = self.camera.pitch_degrees.clamp(-89.99, 89.99);
-        if self.camera.yaw_degrees <= -180. {
-            self.camera.yaw_degrees += 360.;
-        } else if self.camera.yaw_degrees >= 180. {
-            self.camera.yaw_degrees -= 360.;
         }
     }
 }
@@ -515,8 +405,8 @@ fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
         let inv_area_total = 1. / area_total;
         Some([
             inv_area_total * area_bcp, // weight of A
-            inv_area_total * area_cap, // weight of B
-            inv_area_total * area_abp, // weight of C
+            inv_area_total * area_cap, // weight of A
+            inv_area_total * area_abp, // weight of A
         ])
     } else {
         // Outside.
@@ -588,54 +478,6 @@ impl Shader for BasicShader {
             b: self.color.b + self.shading_intensity * (shading - 0.5),
         }
         .into()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Camera {
-    position: Vec3,
-    pitch_degrees: f32,
-    yaw_degrees: f32,
-    fov_y_degrees: f32,
-}
-
-impl Camera {
-    pub fn direction(self) -> Vec3 {
-        let pitch = self.pitch_degrees.to_radians();
-        let yaw = self.yaw_degrees.to_radians();
-        vec3(
-            f32::sin(yaw) * f32::cos(pitch),
-            f32::sin(pitch),
-            -f32::cos(yaw) * f32::cos(pitch),
-        )
-    }
-
-    pub fn move_(&mut self, delta: Vec3) {
-        let direction = self.direction();
-        let forward = direction.with_y(0.).normalize();
-        let up = vec3(0., 1., 0.);
-        let right = forward.cross(up).normalize();
-        let forward_scaled = delta.z * forward;
-        let right_scaled = delta.x * right;
-        let up_scaled = delta.y * up;
-        self.position += forward_scaled + right_scaled + up_scaled;
-    }
-
-    pub fn view_matrix(self) -> Mat4 {
-        Mat4::look_to_rh(
-            self.position,    // eye
-            self.direction(), // dir
-            vec3(0., 1., 0.), // up
-        )
-    }
-
-    pub fn projection_matrix(self, frame_width: f32, frame_height: f32) -> Mat4 {
-        Mat4::perspective_rh(
-            self.fov_y_degrees.to_radians(), // fov_y_radians
-            frame_width / frame_height,      // aspect_ratio
-            0.1,                             // z_near
-            100.0,                           // z_far
-        )
     }
 }
 
