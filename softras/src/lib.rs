@@ -15,6 +15,9 @@ use crate::color::*;
 mod shader;
 use crate::shader::*;
 
+mod render;
+use crate::render::*;
+
 #[derive(Debug, Clone, Copy)]
 pub struct FrameOutput<'game> {
     pub display_buffer: &'game [u8],
@@ -31,17 +34,11 @@ pub struct FrameOutput<'game> {
 
 /// The main game state struct.
 pub struct Game {
-    frame_buffer: Vec<RgbaU8>,
-    depth_buffer: Vec<f32>,
-    frame_width: u32,
-    frame_height: u32,
+    canvas: Canvas,
     overlay_text: String,
-
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
-
     fps_meter: FpsMeter,
-
     camera: Camera,
     previous_frame_instant: Option<Instant>,
     is_paused: bool,
@@ -58,10 +55,7 @@ impl Game {
 
     pub fn new() -> Self {
         Self {
-            frame_buffer: Vec::new(),
-            depth_buffer: Vec::new(),
-            frame_width: 0,
-            frame_height: 0,
+            canvas: Canvas::new(),
             overlay_text: String::new(),
             key_states: [false; _],
             cursor_position: None,
@@ -78,15 +72,19 @@ impl Game {
     }
 
     pub fn display_buffer(&self) -> &[u8] {
-        bytemuck::cast_slice(&self.frame_buffer)
+        bytemuck::cast_slice(self.canvas.frame_buffer())
     }
 
     pub fn display_width(&self) -> u32 {
-        self.frame_width
+        self.canvas.width()
     }
 
     pub fn display_height(&self) -> u32 {
-        self.frame_height
+        self.canvas.height()
+    }
+
+    pub fn overlay_text(&self) -> &str {
+        &self.overlay_text
     }
 
     pub fn frame(&mut self) -> FrameOutput<'_> {
@@ -105,17 +103,16 @@ impl Game {
         self.update_overlay_text();
 
         FrameOutput {
-            display_buffer: bytemuck::cast_slice(&self.frame_buffer),
-            display_width: self.frame_width,
-            display_height: self.frame_height,
-            overlay_text: &self.overlay_text,
+            display_buffer: self.display_buffer(),
+            display_width: self.display_width(),
+            display_height: self.display_height(),
+            overlay_text: self.overlay_text(),
             captures_cursor: !self.is_paused,
         }
     }
 
     pub fn notify_display_resize(&mut self, width: u32, height: u32) {
-        self.frame_width = width;
-        self.frame_height = height;
+        self.canvas.resize(width, height);
     }
 
     pub fn notify_key_down(&mut self, key_code: KeyCode) {
@@ -244,7 +241,8 @@ impl Game {
         _ = writeln!(
             &mut self.overlay_text,
             "resolution: {}x{}",
-            self.frame_width, self.frame_height,
+            self.canvas.width(),
+            self.canvas.height(),
         );
 
         // FPS.
@@ -282,37 +280,39 @@ impl Game {
     }
 
     fn draw(&mut self) {
-        let background_color = Rgb::from_hex(0x040404);
-        let n_pixels = self.frame_width as usize * self.frame_height as usize;
-        if n_pixels == 0 {
+        if self.canvas.width() == 0 || self.canvas.height() == 0 {
             return;
         }
-        self.frame_buffer.resize(n_pixels, RgbaU8::zeroed());
-        self.frame_buffer.fill(background_color.into());
-        self.depth_buffer.resize(n_pixels, f32::zeroed());
-        self.depth_buffer.fill(1.0);
+        self.canvas.clear(RgbaU8::from_hex(0x040404FF));
 
         let view = self.camera.view_matrix();
         let projection = self
             .camera
-            .projection_matrix(self.frame_width as f32, self.frame_height as f32);
-
-        // #[rustfmt::skip]
-        // let triangle = [
-        //     Vertex::new([ 0., 0.,  1.], [0., 1.], [0., 0., 1.]),
-        //     Vertex::new([ 1., 0., -1.], [0., 1.], [0., 0., 1.]),
-        //     Vertex::new([-1., 0., -1.], [0., 1.], [0., 0., 1.]),
-        // ];
-        // let shader = DepthVisualizationShader {
-        //     z_min: 0.,
-        //     z_max: 1.,
-        // };
-        // let model = Mat4::from_scale(vec3(5., 5., 5.));
-        // self.draw_triangle_primitive(triangle, projection, view * model, &shader);
+            .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
 
         self.draw_cubes(projection, view);
+
+        #[rustfmt::skip]
+        let triangle = [
+            Vertex::new([ 0., 0.,  1.], [0., 1.], [0., 0., 1.]),
+            Vertex::new([ 1., 0., -1.], [0., 1.], [0., 0., 1.]),
+            Vertex::new([-1., 0., -1.], [0., 1.], [0., 0., 1.]),
+        ];
+        let shader = DepthVisualizationShader {
+            z_min: 0.,
+            z_max: 1.,
+        };
+        let model = Mat4::from_scale(vec3(5., 5., 5.));
+        draw_triangle(
+            &mut self.canvas,
+            view * model,
+            projection,
+            triangle,
+            &shader,
+        );
     }
 
+    #[allow(dead_code)]
     fn draw_cubes(&mut self, projection: Mat4, view: Mat4) {
         let t = (SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -350,91 +350,9 @@ impl Game {
                     let model_view = view * model;
                     for indices in Self::CUBE_INDICIES {
                         let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-                        self.draw_triangle_primitive(triangle, projection, model_view, &shader);
+                        draw_triangle(&mut self.canvas, model_view, projection, triangle, &shader);
                     }
                 }
-            }
-        }
-    }
-
-    fn draw_triangle_primitive<S: Shader + ?Sized>(
-        &mut self,
-        triangle: [Vertex; 3],
-        projection: Mat4,
-        model_view: Mat4,
-        shader: &S,
-    ) {
-        let mvp = projection * model_view;
-        let positions_clip: [Vec4; 3] = triangle.map(|vertex| mvp * vertex.position.extend(1.));
-        // Temporary solution before we implement proper clipping.
-        if positions_clip.iter().any(|position| position.z < 0.) {
-            return;
-        }
-        // match positions_clip.map(|p| p.z < 0.) {
-        //     [true, true, true] => todo!(),
-        //     [true, true, false] => todo!(),
-        //     [true, false, true] => todo!(),
-        //     [true, false, false] => todo!(),
-        //     [false, true, true] => todo!(),
-        //     [false, true, false] => todo!(),
-        //     [false, false, true] => todo!(),
-        //     [false, false, false] => todo!(),
-        // }
-        let positions_ndc: [Vec3; 3] = positions_clip.map(|p_clip| p_clip.xyz() / p_clip.w);
-        if !is_clockwise_winding(positions_ndc.map(|p| p.xy())) {
-            return;
-        }
-        let normals: [Vec3; 3] = [
-            positions_clip[0].w * triangle[0].normal,
-            positions_clip[1].w * triangle[1].normal,
-            positions_clip[2].w * triangle[2].normal,
-        ];
-        let [x_min, x_max, y_min, y_max]: [u32; 4] = {
-            let [p0, p1, p2] = positions_ndc;
-            let x_min_ndc = p0.x.min(p1.x).min(p2.x);
-            let x_max_ndc = p0.x.max(p1.x).max(p2.x);
-            let y_min_ndc = p0.y.min(p1.y).min(p2.y);
-            let y_max_ndc = p0.y.max(p1.y).max(p2.y);
-            let width = self.frame_width;
-            let height = self.frame_height;
-            [
-                (ndc_to_pixel_x(x_min_ndc, width).floor().max(0.) as u32).min(width - 1),
-                (ndc_to_pixel_x(x_max_ndc, width).ceil().max(0.) as u32).min(width - 1),
-                (ndc_to_pixel_y(y_max_ndc, height).floor().max(0.) as u32).min(height - 1),
-                (ndc_to_pixel_y(y_min_ndc, height).ceil().max(0.) as u32).min(height - 1),
-            ]
-        };
-        for x_pixel in x_min..=x_max {
-            for y_pixel in y_min..=y_max {
-                let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
-                let p_ndc = vec2(
-                    pixel_to_ndc_x(x_pixel, self.frame_width),
-                    pixel_to_ndc_y(y_pixel, self.frame_height),
-                );
-                let Some(weights) = triangle_weights(positions_ndc.map(|p| p.xy()), p_ndc) else {
-                    continue;
-                };
-                let z_ndc = triangular_interpolate(weights, positions_ndc.map(|p| p.z));
-                let depth = &mut self.depth_buffer[i_pixel];
-                if *depth <= z_ndc {
-                    continue;
-                }
-                *depth = z_ndc;
-                let fragment_input = FragmentInput {
-                    position: vec3(p_ndc.x, p_ndc.y, z_ndc),
-                    depth: z_ndc,
-                    uv: vec2(
-                        triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
-                        triangular_interpolate(weights, triangle.map(|v| v.uv.y)),
-                    ),
-                    normal: vec3(
-                        triangular_interpolate(weights, normals.map(|v| v.x)),
-                        triangular_interpolate(weights, normals.map(|v| v.y)),
-                        triangular_interpolate(weights, normals.map(|v| v.z)),
-                    ),
-                };
-                let fragment_result = shader.fragment(fragment_input);
-                self.frame_buffer[i_pixel] = RgbaU8::from(fragment_result);
             }
         }
     }
@@ -493,162 +411,6 @@ impl Game {
         } else if self.camera.yaw_degrees >= 180. {
             self.camera.yaw_degrees -= 360.;
         }
-    }
-}
-
-fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
-    w0 * x0 + w1 * x1 + w2 * x2
-}
-
-fn ndc_to_pixel_x(x_ndc: f32, width: u32) -> f32 {
-    let width_f = width as f32;
-    0.5 * width_f * (x_ndc + 1.)
-}
-
-fn ndc_to_pixel_y(y_ndc: f32, height: u32) -> f32 {
-    let height_f = height as f32;
-    -0.5 * height_f * (y_ndc - 1.)
-}
-
-fn pixel_to_ndc_x(x_pixel: u32, width: u32) -> f32 {
-    let x_pixel_f = x_pixel.min(width - 1) as f32;
-    let width_f = width as f32;
-    2. * x_pixel_f / width_f - 1.
-}
-
-fn pixel_to_ndc_y(y_pixel: u32, height: u32) -> f32 {
-    let y_pixel_f = y_pixel.min(height - 1) as f32;
-    let height_f = height as f32;
-    -2. * y_pixel_f / height_f + 1.
-}
-
-fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
-    fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
-        0.5 * (c - a).dot((b - a).perp())
-    }
-    signed_area(a, b, c) >= 0.
-}
-
-/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
-/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
-fn triangle_weights([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
-    fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
-        0.5 * (c - a).dot((b - a).perp())
-    }
-    let area_bcp = signed_area(b, c, p);
-    let area_cap = signed_area(c, a, p);
-    let area_abp = signed_area(a, b, p);
-    let area_total = area_bcp + area_cap + area_abp;
-    if (area_bcp > 0.) == (area_cap > 0.) && (area_cap > 0.) == (area_abp > 0.) {
-        // Inside.
-        let inv_area_total = 1. / area_total;
-        Some([
-            inv_area_total * area_bcp, // weight of A
-            inv_area_total * area_cap, // weight of B
-            inv_area_total * area_abp, // weight of C
-        ])
-    } else {
-        // Outside.
-        None
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
-#[repr(C)]
-struct Vertex {
-    position: Vec3,
-    uv: Vec2,
-    normal: Vec3,
-}
-
-impl Vertex {
-    const fn new(
-        [x, y, z]: [f32; 3],
-        [u, v]: [f32; 2],
-        [x_normal, y_normal, z_normal]: [f32; 3],
-    ) -> Self {
-        Self {
-            position: vec3(x, y, z),
-            uv: vec2(u, v),
-            normal: vec3(x_normal, y_normal, z_normal),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Camera {
-    position: Vec3,
-    pitch_degrees: f32,
-    yaw_degrees: f32,
-    fov_y_degrees: f32,
-}
-
-impl Camera {
-    pub fn direction(self) -> Vec3 {
-        let pitch = self.pitch_degrees.to_radians();
-        let yaw = self.yaw_degrees.to_radians();
-        vec3(
-            f32::sin(yaw) * f32::cos(pitch),
-            f32::sin(pitch),
-            -f32::cos(yaw) * f32::cos(pitch),
-        )
-    }
-
-    pub fn move_(&mut self, delta: Vec3) {
-        let direction = self.direction();
-        let forward = direction.with_y(0.).normalize();
-        let up = vec3(0., 1., 0.);
-        let right = forward.cross(up).normalize();
-        let forward_scaled = delta.z * forward;
-        let right_scaled = delta.x * right;
-        let up_scaled = delta.y * up;
-        self.position += forward_scaled + right_scaled + up_scaled;
-    }
-
-    pub fn view_matrix(self) -> Mat4 {
-        Mat4::look_to_rh(
-            self.position,    // eye
-            self.direction(), // dir
-            vec3(0., 1., 0.), // up
-        )
-    }
-
-    pub fn projection_matrix(self, frame_width: f32, frame_height: f32) -> Mat4 {
-        let aspect = frame_width / frame_height;
-        let fovy = self.fov_y_degrees.to_radians();
-        let near = 0.1;
-        let far = 100.;
-
-        Mat4::perspective_rh(fovy, aspect, near, far)
-
-        // let f = 1. / f32::tan(fovy / 2.);
-
-        // let c0r0 = f / aspect;
-        // let c0r1 = 0.;
-        // let c0r2 = 0.;
-        // let c0r3 = 0.;
-
-        // let c1r0 = 0.;
-        // let c1r1 = f;
-        // let c1r2 = 0.;
-        // let c1r3 = 0.;
-
-        // let c2r0 = 0.;
-        // let c2r1 = 0.;
-        // let c2r2 = (far + near) / (near - far);
-        // let c2r3 = -1.;
-
-        // let c3r0 = 0.;
-        // let c3r1 = 0.;
-        // let c3r2 = (2. * far * near) / (near - far);
-        // let c3r3 = 0.;
-
-        // mat4(
-        //     vec4(c0r0, c0r1, c0r2, c0r3),
-        //     vec4(c1r0, c1r1, c1r2, c1r3),
-        //     vec4(c2r0, c2r1, c2r2, c2r3),
-        //     vec4(c3r0, c3r1, c3r2, c3r3),
-        // )
     }
 }
 
