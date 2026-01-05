@@ -5,7 +5,7 @@ use muilib::{
     cgmath::*,
     winit::{
         application::ApplicationHandler,
-        event::{DeviceEvent, DeviceId, MouseScrollDelta, WindowEvent},
+        event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent},
         event_loop::{ActiveEventLoop, EventLoop},
         keyboard::PhysicalKey,
         window::{CursorGrabMode, Window, WindowId},
@@ -170,6 +170,23 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     self.game.notify_key_up(key_code);
                 }
             }
+            WindowEvent::MouseInput {
+                device_id: _,
+                state,
+                button,
+            } => {
+                let button_ = match button {
+                    MouseButton::Left => softras::MouseButton::Left,
+                    MouseButton::Right => softras::MouseButton::Right,
+                    MouseButton::Middle => softras::MouseButton::Middle,
+                    _ => return,
+                };
+                if state.is_pressed() {
+                    self.game.notify_cursor_down(button_);
+                } else {
+                    self.game.notify_cursor_up(button_);
+                }
+            }
             WindowEvent::CursorEntered { device_id: _ } => {
                 self.game.notify_cursor_entered();
             }
@@ -180,7 +197,12 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 device_id: _,
                 position,
             } => {
-                self.cursor_position = Some(vec2(position.x as f32, position.y as f32));
+                let frame_size = self.image_view.size();
+                let window_size = self.window.inner_size();
+                self.cursor_position = Some(vec2(
+                    position.x as f32 / window_size.width as f32 * frame_size.width,
+                    position.y as f32 / window_size.height as f32 * frame_size.height,
+                ));
             }
             WindowEvent::MouseWheel {
                 device_id: _,

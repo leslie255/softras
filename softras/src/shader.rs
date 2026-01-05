@@ -23,14 +23,14 @@ pub trait Shader {
 }
 
 /// Shader that just outputs a constant color.
-/// For basic directional shading on 3D objects, use [`Basic3dShader`].
+/// For basic directional shading on 3D objects, use [`DirectionalShadingShader`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Basic2dShader {
-    /// The default value is `Rgb::from_hex(0xFFFFFF)`.
+pub struct BasicShader {
+    /// The default value is `Rgb::from_hex(0xFF00FF)`.
     pub fill_color: Rgb,
 }
 
-impl Default for Basic2dShader {
+impl Default for BasicShader {
     fn default() -> Self {
         Self {
             fill_color: Rgb::from_hex(0xFFFFFF),
@@ -38,7 +38,7 @@ impl Default for Basic2dShader {
     }
 }
 
-impl Shader for Basic2dShader {
+impl Shader for BasicShader {
     fn fragment(&self, _: FragmentInput) -> Rgba {
         self.fill_color.into()
     }
@@ -46,7 +46,7 @@ impl Shader for Basic2dShader {
 
 /// Fill color + normal-based directional shading.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Basic3dShader {
+pub struct DirectionalShadingShader {
     /// The color of the object surface.
     ///
     /// The default value is `Rgb::from_hex(0xFFFFFF)`.
@@ -67,7 +67,7 @@ pub struct Basic3dShader {
     pub highlightness: f32,
 }
 
-impl Default for Basic3dShader {
+impl Default for DirectionalShadingShader {
     fn default() -> Self {
         Self {
             color: Rgb::from_hex(0xFFFFFF),
@@ -78,7 +78,7 @@ impl Default for Basic3dShader {
     }
 }
 
-impl Shader for Basic3dShader {
+impl Shader for DirectionalShadingShader {
     fn fragment(&self, input: FragmentInput) -> Rgba {
         let normal = input.normal.normalize_or(vec3(1., 0., 0.));
         let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));

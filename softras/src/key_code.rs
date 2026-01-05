@@ -1,3 +1,10 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
 /// A key code.
 ///
 /// Same as `winit`'s `KeyCode`, which is basically UI Events Specification's

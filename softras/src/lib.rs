@@ -67,7 +67,7 @@ impl Game {
             cursor_position: None,
             fps_meter: FpsMeter::new(),
             camera: Camera {
-                position: vec3(0., 0., 20.),
+                position: vec3(0., 0., 10.),
                 pitch_degrees: 0.,
                 yaw_degrees: 0.,
                 fov_y_degrees: 90.,
@@ -124,6 +124,14 @@ impl Game {
 
     pub fn notify_key_up(&mut self, key_code: KeyCode) {
         self.key_states[key_code as usize] = false;
+    }
+
+    pub fn notify_cursor_down(&mut self, button: MouseButton) {
+        _ = button;
+    }
+
+    pub fn notify_cursor_up(&mut self, button: MouseButton) {
+        _ = button;
     }
 
     pub fn notify_cursor_moved(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
@@ -213,6 +221,11 @@ impl Game {
     }
 
     #[allow(dead_code)]
+    fn control_is_down(&self) -> bool {
+        self.key_is_down(KeyCode::ControlLeft) || self.key_is_down(KeyCode::ControlRight)
+    }
+
+    #[allow(dead_code)]
     fn shift_is_down(&self) -> bool {
         self.key_is_down(KeyCode::ShiftLeft) || self.key_is_down(KeyCode::ShiftRight)
     }
@@ -271,19 +284,40 @@ impl Game {
     fn draw(&mut self) {
         let background_color = Rgb::from_hex(0x040404);
         let n_pixels = self.frame_width as usize * self.frame_height as usize;
+        if n_pixels == 0 {
+            return;
+        }
         self.frame_buffer.resize(n_pixels, RgbaU8::zeroed());
         self.frame_buffer.fill(background_color.into());
-        self.depth_buffer.resize(n_pixels, 0.0f32);
-        self.depth_buffer.fill(f32::INFINITY);
-        let t = (SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0f64, |duration| duration.as_secs_f64())
-            % 86400.) as f32;
+        self.depth_buffer.resize(n_pixels, f32::zeroed());
+        self.depth_buffer.fill(1.0);
+
         let view = self.camera.view_matrix();
         let projection = self
             .camera
             .projection_matrix(self.frame_width as f32, self.frame_height as f32);
 
+        // #[rustfmt::skip]
+        // let triangle = [
+        //     Vertex::new([ 0., 0.,  1.], [0., 1.], [0., 0., 1.]),
+        //     Vertex::new([ 1., 0., -1.], [0., 1.], [0., 0., 1.]),
+        //     Vertex::new([-1., 0., -1.], [0., 1.], [0., 0., 1.]),
+        // ];
+        // let shader = DepthVisualizationShader {
+        //     z_min: 0.,
+        //     z_max: 1.,
+        // };
+        // let model = Mat4::from_scale(vec3(5., 5., 5.));
+        // self.draw_triangle_primitive(triangle, projection, view * model, &shader);
+
+        self.draw_cubes(projection, view);
+    }
+
+    fn draw_cubes(&mut self, projection: Mat4, view: Mat4) {
+        let t = (SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0.0f64, |duration| duration.as_secs_f64())
+            % 86400.) as f32;
         let cubes: [(Vec3, f32, Rgb, f32); _] = [
             // position, size, color, rotation speed
             (vec3(-15., 0., 0.), 3., Rgb::from_hex(0x008080), -2.0f32),
@@ -291,7 +325,6 @@ impl Game {
             (vec3(5., 0., 0.), 4., Rgb::from_hex(0x00A060), -1.0f32),
             (vec3(15., 0., 0.), 3., Rgb::from_hex(0x800080), 1.5f32),
         ];
-
         for y_repeat in -1i32..=2i32 {
             for z_repeat in -3i32..=0i32 {
                 for (position, size, color, rotation_speed) in cubes {
@@ -305,57 +338,59 @@ impl Game {
                         false => -rotation_speed,
                     };
                     let size_vec3 = vec3(size, size, size);
-                    // let shader = DepthVisualizationShader {
-                    //     z_min: 0.,
-                    //     z_max: 1.,
-                    // };
-                    let shader = Basic3dShader {
+                    let shader = DirectionalShadingShader {
                         color,
                         ..Default::default()
                     };
                     let model = Mat4::from_translation(position)
-                        // * Mat4::from_rotation_x(t * rotation_speed)
-                        // * Mat4::from_rotation_z(t * rotation_speed)
+                        * Mat4::from_rotation_x(t * rotation_speed)
+                        * Mat4::from_rotation_z(t * rotation_speed)
                         * Mat4::from_translation(-0.5 * size_vec3)
                         * Mat4::from_scale(size_vec3);
                     let model_view = view * model;
                     for indices in Self::CUBE_INDICIES {
                         let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-                        self.draw_triangle(triangle, projection, model_view, &shader);
+                        self.draw_triangle_primitive(triangle, projection, model_view, &shader);
                     }
                 }
             }
         }
     }
 
-    fn draw_triangle<S: Shader + ?Sized>(
+    fn draw_triangle_primitive<S: Shader + ?Sized>(
         &mut self,
-        triangle_local: [Vertex; 3],
+        triangle: [Vertex; 3],
         projection: Mat4,
         model_view: Mat4,
         shader: &S,
     ) {
         let mvp = projection * model_view;
-        let triangle = triangle_local.map(|vertex| {
-            let clip = mvp * vertex.position.extend(1.);
-            Vertex {
-                position: clip.xyz() / clip.w,
-                normal: (model_view.transform_vector3(vertex.normal) * clip.w)
-                    .normalize_or(vec3(1., 0., 0.)),
-                ..vertex
-            }
-        });
-        if triangle.map(|vertex| vertex.position.z < 0.) == [true; 3] {
+        let positions_clip: [Vec4; 3] = triangle.map(|vertex| mvp * vertex.position.extend(1.));
+        // Temporary solution before we implement proper clipping.
+        if positions_clip.iter().any(|position| position.z < 0.) {
             return;
         }
-        if triangle.map(|vertex| vertex.position.z > 1.) == [true; 3] {
+        // match positions_clip.map(|p| p.z < 0.) {
+        //     [true, true, true] => todo!(),
+        //     [true, true, false] => todo!(),
+        //     [true, false, true] => todo!(),
+        //     [true, false, false] => todo!(),
+        //     [false, true, true] => todo!(),
+        //     [false, true, false] => todo!(),
+        //     [false, false, true] => todo!(),
+        //     [false, false, false] => todo!(),
+        // }
+        let positions_ndc: [Vec3; 3] = positions_clip.map(|p_clip| p_clip.xyz() / p_clip.w);
+        if !is_clockwise_winding(positions_ndc.map(|p| p.xy())) {
             return;
         }
-        if !is_clockwise_winding(triangle.map(|vertex| vertex.position.xy())) {
-            return;
-        }
+        let normals: [Vec3; 3] = [
+            positions_clip[0].w * triangle[0].normal,
+            positions_clip[1].w * triangle[1].normal,
+            positions_clip[2].w * triangle[2].normal,
+        ];
         let [x_min, x_max, y_min, y_max]: [u32; 4] = {
-            let [p0, p1, p2] = triangle.map(|vertex| vertex.position.xy());
+            let [p0, p1, p2] = positions_ndc;
             let x_min_ndc = p0.x.min(p1.x).min(p2.x);
             let x_max_ndc = p0.x.max(p1.x).max(p2.x);
             let y_min_ndc = p0.y.min(p1.y).min(p2.y);
@@ -372,37 +407,30 @@ impl Game {
         for x_pixel in x_min..=x_max {
             for y_pixel in y_min..=y_max {
                 let i_pixel = y_pixel as usize * self.frame_width as usize + x_pixel as usize;
-                let ndc = vec2(
+                let p_ndc = vec2(
                     pixel_to_ndc_x(x_pixel, self.frame_width),
                     pixel_to_ndc_y(y_pixel, self.frame_height),
                 );
-                let rasterize_result = rasterize(triangle.map(|vertex| vertex.position.xy()), ndc);
-                let Some(weights) = rasterize_result else {
+                let Some(weights) = triangle_weights(positions_ndc.map(|p| p.xy()), p_ndc) else {
                     continue;
                 };
-                let z = triangular_interpolate(weights, triangle.map(|v| v.position.z));
-                if !(-1.0..1.0).contains(&ndc.x)
-                    || !(-1.0..1.0).contains(&ndc.y)
-                    || !(0.0..1.0).contains(&z)
-                {
-                    continue;
-                }
+                let z_ndc = triangular_interpolate(weights, positions_ndc.map(|p| p.z));
                 let depth = &mut self.depth_buffer[i_pixel];
-                if *depth <= z {
+                if *depth <= z_ndc {
                     continue;
                 }
-                *depth = z;
+                *depth = z_ndc;
                 let fragment_input = FragmentInput {
-                    position: vec3(ndc.x, ndc.y, z),
-                    depth: z,
+                    position: vec3(p_ndc.x, p_ndc.y, z_ndc),
+                    depth: z_ndc,
                     uv: vec2(
                         triangular_interpolate(weights, triangle.map(|v| v.uv.x)),
                         triangular_interpolate(weights, triangle.map(|v| v.uv.y)),
                     ),
                     normal: vec3(
-                        triangular_interpolate(weights, triangle.map(|v| v.normal.x)),
-                        triangular_interpolate(weights, triangle.map(|v| v.normal.y)),
-                        triangular_interpolate(weights, triangle.map(|v| v.normal.z)),
+                        triangular_interpolate(weights, normals.map(|v| v.x)),
+                        triangular_interpolate(weights, normals.map(|v| v.y)),
+                        triangular_interpolate(weights, normals.map(|v| v.z)),
                     ),
                 };
                 let fragment_result = shader.fragment(fragment_input);
@@ -438,11 +466,14 @@ impl Game {
         if movement.x.is_nan() | movement.y.is_nan() | movement.z.is_nan() {
             return;
         }
-        if self.key_is_down(KeyCode::ControlLeft) && movement.z > 0. {
+        if self.key_is_down(KeyCode::ControlLeft) && movement.z >= 0. {
             movement.z *= 2.;
         }
         if self.key_is_down(KeyCode::F3) {
             movement *= 32.;
+        }
+        if self.alt_is_down() {
+            movement /= 8.;
         }
         movement *= frame_duration.as_secs_f32();
 
@@ -500,7 +531,7 @@ fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
 
 /// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
 /// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
-fn rasterize([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
+fn triangle_weights([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
         0.5 * (c - a).dot((b - a).perp())
     }
@@ -588,34 +619,36 @@ impl Camera {
         let near = 0.1;
         let far = 100.;
 
-        let f = 1. / f32::tan(fovy / 2.);
+        Mat4::perspective_rh(fovy, aspect, near, far)
 
-        let c0r0 = f / aspect;
-        let c0r1 = 0.;
-        let c0r2 = 0.;
-        let c0r3 = 0.;
+        // let f = 1. / f32::tan(fovy / 2.);
 
-        let c1r0 = 0.;
-        let c1r1 = f;
-        let c1r2 = 0.;
-        let c1r3 = 0.;
+        // let c0r0 = f / aspect;
+        // let c0r1 = 0.;
+        // let c0r2 = 0.;
+        // let c0r3 = 0.;
 
-        let c2r0 = 0.;
-        let c2r1 = 0.;
-        let c2r2 = (far + near) / (near - far);
-        let c2r3 = -1.;
+        // let c1r0 = 0.;
+        // let c1r1 = f;
+        // let c1r2 = 0.;
+        // let c1r3 = 0.;
 
-        let c3r0 = 0.;
-        let c3r1 = 0.;
-        let c3r2 = (2. * far * near) / (near - far);
-        let c3r3 = 0.;
+        // let c2r0 = 0.;
+        // let c2r1 = 0.;
+        // let c2r2 = (far + near) / (near - far);
+        // let c2r3 = -1.;
 
-        mat4(
-            vec4(c0r0, c0r1, c0r2, c0r3),
-            vec4(c1r0, c1r1, c1r2, c1r3),
-            vec4(c2r0, c2r1, c2r2, c2r3),
-            vec4(c3r0, c3r1, c3r2, c3r3),
-        )
+        // let c3r0 = 0.;
+        // let c3r1 = 0.;
+        // let c3r2 = (2. * far * near) / (near - far);
+        // let c3r3 = 0.;
+
+        // mat4(
+        //     vec4(c0r0, c0r1, c0r2, c0r3),
+        //     vec4(c1r0, c1r1, c1r2, c1r3),
+        //     vec4(c2r0, c2r1, c2r2, c2r3),
+        //     vec4(c3r0, c3r1, c3r2, c3r3),
+        // )
     }
 }
 
