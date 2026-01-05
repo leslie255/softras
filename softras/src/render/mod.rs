@@ -1,28 +1,13 @@
-use std::{f32, hint::assert_unchecked};
+use std::f32;
 
-use crate::*;
+use bytemuck::{Zeroable, Pod};
+use glam::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
-#[repr(C)]
-pub struct Vertex {
-    pub position: Vec3,
-    pub uv: Vec2,
-    pub normal: Vec3,
-}
+mod color;
+mod shader;
 
-impl Vertex {
-    pub const fn new(
-        [x, y, z]: [f32; 3],
-        [u, v]: [f32; 2],
-        [x_normal, y_normal, z_normal]: [f32; 3],
-    ) -> Self {
-        Self {
-            position: vec3(x, y, z),
-            uv: vec2(u, v),
-            normal: vec3(x_normal, y_normal, z_normal),
-        }
-    }
-}
+pub use color::*;
+pub use shader::*;
 
 #[derive(Clone)]
 pub struct Canvas {
@@ -80,7 +65,6 @@ impl Canvas {
         self.depth_buffer.resize(self.n_pixels(), f32::zeroed());
     }
 
-    #[inline(always)] // n_pixels is used in assert to eliminate bound checks
     pub fn n_pixels(&self) -> usize {
         self.width as usize * self.height as usize
     }
@@ -94,13 +78,6 @@ pub fn draw_triangle<S: Shader + ?Sized>(
     vertices: [Vertex; 3],
     shader: &S,
 ) {
-    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
-    debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
-    unsafe {
-        assert_unchecked(canvas.frame_buffer.len() == canvas.n_pixels());
-        assert_unchecked(canvas.depth_buffer.len() == canvas.n_pixels());
-    }
-
     let mvp = projection * model_view;
     let positions_clipspace: [Vec4; 3] = vertices.map(|vertex| mvp * vertex.position.extend(1.));
 
@@ -137,10 +114,7 @@ fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
     // FIXME: UV coordinates.
     const { assert!(I_BACK < 3) };
     let [p0, p1, p2] = positions_clip;
-    let pb = positions_clip[I_BACK];
-    let [p0_pb, p1_pb, p2_pb] = positions_clip.map(|p| between(p, pb));
-    _ = p0;
-    _ = p0_pb;
+    let [p0_pb, p1_pb, p2_pb] = positions_clip.map(|p| between(p, positions_clip[I_BACK]));
     let positions: [[Vec4; 3]; 2] = match I_BACK {
         0 => [[p1_pb, p1, p2], [p1_pb, p2, p2_pb]],
         1 => [[p2_pb, p2, p0], [p2_pb, p0, p0_pb]],
@@ -164,10 +138,11 @@ fn clip_case_2<S: Shader + ?Sized, const I_FRONT: usize>(
     // FIXME: UV coordinates.
     const { assert!(I_FRONT < 3) };
     let [p0, p1, p2] = positions_clip;
+    let [p0_pf, p1_pf, p2_pf] = positions_clip.map(|p| between(positions_clip[I_FRONT], p));
     let positions: [Vec4; 3] = match I_FRONT {
-        0 => [p0, between(p0, p1), between(p0, p2)],
-        1 => [between(p1, p0), p1, between(p1, p2)],
-        2 => [between(p2, p0), between(p2, p1), p2],
+        0 => [p0, p1_pf, p2_pf],
+        1 => [p0_pf, p1, p2_pf],
+        2 => [p0_pf, p1_pf, p2],
         _ => unreachable!(),
     };
     after_near_clipping(canvas, model_view, positions, vertices, shader);
@@ -187,6 +162,8 @@ fn after_near_clipping<S: Shader + ?Sized>(
     vertices: [Vertex; 3],
     shader: &S,
 ) {
+    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
     let (positions_ndc, depths): ([Vec2; 3], [f32; 3]) = {
         let positions = positions_clip.map(|p_clip| p_clip.xyz() / p_clip.w);
         (positions.map(|p| p.xy()), positions.map(|p| p.z))
@@ -225,7 +202,7 @@ fn after_near_clipping<S: Shader + ?Sized>(
                 continue;
             };
             let depth = triangular_interpolate(weights, depths);
-            let depth_sample = &mut canvas.depth_buffer[i_pixel];
+            let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
             if *depth_sample <= depth {
                 continue;
             }
@@ -244,7 +221,8 @@ fn after_near_clipping<S: Shader + ?Sized>(
                 ),
             };
             let fragment_result = shader.fragment(fragment_input);
-            canvas.frame_buffer[i_pixel] = RgbaU8::from(fragment_result);
+            *unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) } =
+                RgbaU8::from(fragment_result);
         }
     }
 }
@@ -351,5 +329,27 @@ impl Camera {
         let far = 100.;
 
         Mat4::perspective_rh(fovy, aspect, near, far)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
+#[repr(C)]
+pub struct Vertex {
+    pub position: Vec3,
+    pub uv: Vec2,
+    pub normal: Vec3,
+}
+
+impl Vertex {
+    pub const fn new(
+        [x, y, z]: [f32; 3],
+        [u, v]: [f32; 2],
+        [x_normal, y_normal, z_normal]: [f32; 3],
+    ) -> Self {
+        Self {
+            position: vec3(x, y, z),
+            uv: vec2(u, v),
+            normal: vec3(x_normal, y_normal, z_normal),
+        }
     }
 }

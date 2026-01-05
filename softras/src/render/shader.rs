@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use crate::*;
+use bytemuck::{Pod, Zeroable};
+
+use crate::render::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
 #[repr(C)]

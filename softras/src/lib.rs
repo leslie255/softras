@@ -3,18 +3,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use bytemuck::{Pod, Zeroable};
 use glam::*;
 
-mod color;
 mod key_code;
 mod render;
-mod shader;
 
-use color::*;
 pub use key_code::*;
 use render::*;
-use shader::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameOutput<'game> {
@@ -59,7 +54,7 @@ impl Game {
             cursor_position: None,
             fps_meter: FpsMeter::new(),
             camera: Camera {
-                position: vec3(0., 0., 10.),
+                position: vec3(0., 1., 40.),
                 pitch_degrees: 0.,
                 yaw_degrees: 0.,
                 fov_y_degrees: 90.,
@@ -281,7 +276,7 @@ impl Game {
         if self.canvas.width() == 0 || self.canvas.height() == 0 {
             return;
         }
-        self.canvas.clear(RgbaU8::from_hex(0x040404FF));
+        self.canvas.clear(RgbaU8::from_hex(0x020202FF));
 
         let view = self.camera.view_matrix();
         let projection = self
@@ -291,23 +286,30 @@ impl Game {
         self.draw_cubes(projection, view);
 
         #[rustfmt::skip]
-        let triangle = [
-            Vertex::new([ 0., 0.,  1.], [0., 1.], [0., 0., 1.]),
-            Vertex::new([ 1., 0., -1.], [0., 1.], [0., 0., 1.]),
-            Vertex::new([-1., 0., -1.], [0., 1.], [0., 0., 1.]),
+        let ground_vertices = [
+            Vertex::new([1., 0., 0.], [0., 1.], [0., 1., 0.]),
+            Vertex::new([0., 0., 0.], [1., 1.], [0., 1., 0.]),
+            Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
+            Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
         ];
-        let shader = DepthVisualizationShader {
-            z_min: 0.,
-            z_max: 1.,
+        let ground_indices = [[0u16, 1, 2], [2, 3, 0]];
+        let shader = DirectionalShadingShader {
+            color: Rgb::from_hex(0x202020),
+            light_direction: vec3(-1., -1., -1.).normalize(),
+            ..Default::default()
         };
-        let model = Mat4::from_scale(vec3(5., 5., 5.));
-        draw_triangle(
-            &mut self.canvas,
-            view * model,
-            projection,
-            triangle,
-            &shader,
-        );
+        let ground_size = 100.0f32;
+        let model = Mat4::from_translation(0.5 * vec3(-ground_size, 0., -ground_size))
+            * Mat4::from_scale(vec3(ground_size, 0., ground_size));
+        for indices in ground_indices {
+            draw_triangle(
+                &mut self.canvas,
+                view * model,
+                projection,
+                indices.map(|i| ground_vertices[i as usize]),
+                &shader,
+            );
+        }
     }
 
     #[allow(dead_code)]
@@ -323,11 +325,11 @@ impl Game {
             (vec3(5., 0., 0.), 4., Rgb::from_hex(0x00A060), -1.0f32),
             (vec3(15., 0., 0.), 3., Rgb::from_hex(0x800080), 1.5f32),
         ];
-        for y_repeat in -1i32..=2i32 {
-            for z_repeat in -3i32..=0i32 {
+        for y_repeat in 0i32..=3i32 {
+            for z_repeat in -1i32..=2i32 {
                 for (position, size, color, rotation_speed) in cubes {
                     let position = Vec3 {
-                        y: y_repeat as f32 * 10.,
+                        y: y_repeat as f32 * 10. + 3.,
                         z: z_repeat as f32 * 10.,
                         ..position
                     };
