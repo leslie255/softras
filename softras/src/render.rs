@@ -100,63 +100,87 @@ pub fn draw_triangle<S: Shader + ?Sized>(
         assert_unchecked(canvas.frame_buffer.len() == canvas.n_pixels());
         assert_unchecked(canvas.depth_buffer.len() == canvas.n_pixels());
     }
+
     let mvp = projection * model_view;
-    let positions_clip: [Vec4; 3] = vertices.map(|vertex| mvp * vertex.position.extend(1.));
-    match positions_clip.map(|p| p.z >= 0.) {
+    let positions_clipspace: [Vec4; 3] = vertices.map(|vertex| mvp * vertex.position.extend(1.));
+
+    #[rustfmt::skip]
+    match positions_clipspace.map(|p| p.z >= 0.) {
+        // All points are in front of near plane, no near plane clipping needed.
+        [true, true, true] => after_near_clipping(canvas, model_view, positions_clipspace, vertices, shader),
+
+        // All points are behind near plane.
         [false, false, false] => (),
-        [true, true, true] => after_clipping(canvas, model_view, positions_clip, vertices, shader),
 
-        [false, true, true] => {
-            clip_1_and_draw_triangle::<_, 0>(canvas, model_view, positions_clip, vertices, shader)
-        }
-        [true, true, false] => {
-            clip_1_and_draw_triangle::<_, 1>(canvas, model_view, positions_clip, vertices, shader)
-        }
-        [true, false, true] => {
-            clip_1_and_draw_triangle::<_, 2>(canvas, model_view, positions_clip, vertices, shader)
-        }
+        // Clip Case 1: One point is behind the near plane, the other two points are in front.
+        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, positions_clipspace, vertices, shader),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, positions_clipspace, vertices, shader),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, positions_clipspace, vertices, shader),
 
-        [true, false, false] => {
-            clip_2_and_draw_triangle::<_, 0>(canvas, model_view, positions_clip, vertices, shader)
-        }
-        [false, true, false] => {
-            clip_2_and_draw_triangle::<_, 1>(canvas, model_view, positions_clip, vertices, shader)
-        }
-        [false, false, true] => {
-            clip_2_and_draw_triangle::<_, 2>(canvas, model_view, positions_clip, vertices, shader)
-        }
-    }
+        // Clip Case 2: Two points are behind the near plane, the other point is in front.
+        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, positions_clipspace, vertices, shader),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, positions_clipspace, vertices, shader),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, positions_clipspace, vertices, shader),
+    };
 }
 
-/// Draw the triangle in the case where one vertex is behind the near plane.
+// Clip Case 1: One point is behind the near plane, the other two points are in front.
 #[cold]
 #[inline(never)]
-#[expect(unused_variables)]
-fn clip_1_and_draw_triangle<S: Shader + ?Sized, const I_BEHIND: usize>(
+fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     positions_clip: [Vec4; 3],
     vertices: [Vertex; 3],
     shader: &S,
 ) {
-    // FIXME: implement this.
+    // FIXME: UV coordinates.
+    const { assert!(I_BACK < 3) };
+    let [p0, p1, p2] = positions_clip;
+    let pb = positions_clip[I_BACK];
+    let [p0_pb, p1_pb, p2_pb] = positions_clip.map(|p| between(p, pb));
+    _ = p0;
+    _ = p0_pb;
+    let positions: [[Vec4; 3]; 2] = match I_BACK {
+        0 => [[p1_pb, p1, p2], [p1_pb, p2, p2_pb]],
+        1 => [[p2_pb, p2, p0], [p2_pb, p0, p0_pb]],
+        2 => [[p0_pb, p0, p1], [p0_pb, p1, p1_pb]],
+        _ => unreachable!(),
+    };
+    after_near_clipping(canvas, model_view, positions[0], vertices, shader);
+    after_near_clipping(canvas, model_view, positions[1], vertices, shader);
 }
 
-/// Draw the triangle in the case where 2 vertices is behind the near plane.
+// Clip Case 2: Two points are behind the near plane, the other point is in front.
 #[cold]
 #[inline(never)]
-#[expect(unused_variables)]
-fn clip_2_and_draw_triangle<S: Shader + ?Sized, const I_FRONT: usize>(
+fn clip_case_2<S: Shader + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     positions_clip: [Vec4; 3],
     vertices: [Vertex; 3],
     shader: &S,
 ) {
+    // FIXME: UV coordinates.
+    const { assert!(I_FRONT < 3) };
+    let [p0, p1, p2] = positions_clip;
+    let positions: [Vec4; 3] = match I_FRONT {
+        0 => [p0, between(p0, p1), between(p0, p2)],
+        1 => [between(p1, p0), p1, between(p1, p2)],
+        2 => [between(p2, p0), between(p2, p1), p2],
+        _ => unreachable!(),
+    };
+    after_near_clipping(canvas, model_view, positions, vertices, shader);
+}
+
+/// Helper function used in `clip_case_1` and `clip_case_2`.
+fn between(p_front: Vec4, p_back: Vec4) -> Vec4 {
+    let t = p_front.z / (p_front.z - p_back.z);
+    p_front + t * (p_back - p_front)
 }
 
 #[inline(always)]
-fn after_clipping<S: Shader + ?Sized>(
+fn after_near_clipping<S: Shader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     positions_clip: [Vec4; 3],

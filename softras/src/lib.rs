@@ -6,17 +6,15 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use glam::*;
 
-mod key_code;
-pub use key_code::*;
-
 mod color;
-use crate::color::*;
-
-mod shader;
-use crate::shader::*;
-
+mod key_code;
 mod render;
-use crate::render::*;
+mod shader;
+
+use color::*;
+pub use key_code::*;
+use render::*;
+use shader::*;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameOutput<'game> {
