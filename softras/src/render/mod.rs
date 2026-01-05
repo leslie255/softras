@@ -1,6 +1,6 @@
 use std::f32;
 
-use bytemuck::{Zeroable, Pod};
+use bytemuck::Zeroable as _;
 use glam::*;
 
 mod color;
@@ -79,25 +79,28 @@ pub fn draw_triangle<S: Shader + ?Sized>(
     shader: &S,
 ) {
     let mvp = projection * model_view;
-    let positions_clipspace: [Vec4; 3] = vertices.map(|vertex| mvp * vertex.position.extend(1.));
+    let vertices_clip: [Vertex<Vec4>; 3] = vertices.map(|vertex| {
+        let position = mvp * vertex.position.extend(1.);
+        vertex.with_position(position)
+    });
 
     #[rustfmt::skip]
-    match positions_clipspace.map(|p| p.z >= 0.) {
+    match vertices_clip.map(|vertex| vertex.position.z >= 0.) {
         // All points are in front of near plane, no near plane clipping needed.
-        [true, true, true] => after_near_clipping(canvas, model_view, positions_clipspace, vertices, shader),
+        [true, true, true] => after_near_clipping(canvas, model_view, vertices_clip, shader),
 
         // All points are behind near plane.
         [false, false, false] => (),
 
         // Clip Case 1: One point is behind the near plane, the other two points are in front.
-        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, positions_clipspace, vertices, shader),
-        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, positions_clipspace, vertices, shader),
-        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, positions_clipspace, vertices, shader),
+        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, vertices_clip, shader),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, vertices_clip, shader),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, vertices_clip, shader),
 
         // Clip Case 2: Two points are behind the near plane, the other point is in front.
-        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, positions_clipspace, vertices, shader),
-        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, positions_clipspace, vertices, shader),
-        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, positions_clipspace, vertices, shader),
+        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, vertices_clip, shader),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, vertices_clip, shader),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, vertices_clip, shader),
     };
 }
 
@@ -107,22 +110,20 @@ pub fn draw_triangle<S: Shader + ?Sized>(
 fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
-    positions_clip: [Vec4; 3],
-    vertices: [Vertex; 3],
+    vertices: [Vertex<Vec4>; 3],
     shader: &S,
 ) {
-    // FIXME: UV coordinates.
     const { assert!(I_BACK < 3) };
-    let [p0, p1, p2] = positions_clip;
-    let [p0_pb, p1_pb, p2_pb] = positions_clip.map(|p| between(p, positions_clip[I_BACK]));
-    let positions: [[Vec4; 3]; 2] = match I_BACK {
-        0 => [[p1_pb, p1, p2], [p1_pb, p2, p2_pb]],
-        1 => [[p2_pb, p2, p0], [p2_pb, p0, p0_pb]],
-        2 => [[p0_pb, p0, p1], [p0_pb, p1, p1_pb]],
+    let [v0, v1, v2] = vertices;
+    let [v0_vb, v1_vb, v2_vb] = vertices.map(|p| near_plane_intersection(p, vertices[I_BACK]));
+    let result_vertices: [[Vertex<Vec4>; 3]; 2] = match I_BACK {
+        0 => [[v1_vb, v1, v2], [v1_vb, v2, v2_vb]],
+        1 => [[v2_vb, v2, v0], [v2_vb, v0, v0_vb]],
+        2 => [[v0_vb, v0, v1], [v0_vb, v1, v1_vb]],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, positions[0], vertices, shader);
-    after_near_clipping(canvas, model_view, positions[1], vertices, shader);
+    after_near_clipping(canvas, model_view, result_vertices[0], shader);
+    after_near_clipping(canvas, model_view, result_vertices[1], shader);
 }
 
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
@@ -131,69 +132,81 @@ fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
 fn clip_case_2<S: Shader + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
-    positions_clip: [Vec4; 3],
-    vertices: [Vertex; 3],
+    vertices: [Vertex<Vec4>; 3],
     shader: &S,
 ) {
-    // FIXME: UV coordinates.
     const { assert!(I_FRONT < 3) };
-    let [p0, p1, p2] = positions_clip;
-    let [p0_pf, p1_pf, p2_pf] = positions_clip.map(|p| between(positions_clip[I_FRONT], p));
-    let positions: [Vec4; 3] = match I_FRONT {
-        0 => [p0, p1_pf, p2_pf],
-        1 => [p0_pf, p1, p2_pf],
-        2 => [p0_pf, p1_pf, p2],
+    let [v0, v1, v2] = vertices;
+    let [v0_vf, v1_vf, v2_vf] = vertices.map(|p| near_plane_intersection(vertices[I_FRONT], p));
+    let positions: [Vertex<Vec4>; 3] = match I_FRONT {
+        0 => [v0, v1_vf, v2_vf],
+        1 => [v0_vf, v1, v2_vf],
+        2 => [v0_vf, v1_vf, v2],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, positions, vertices, shader);
+    after_near_clipping(canvas, model_view, positions, shader);
 }
 
-/// Helper function used in `clip_case_1` and `clip_case_2`.
-fn between(p_front: Vec4, p_back: Vec4) -> Vec4 {
-    let t = p_front.z / (p_front.z - p_back.z);
-    p_front + t * (p_back - p_front)
+fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Vertex<Vec4> {
+    let t = v_front.position.z / (v_front.position.z - v_back.position.z);
+    Vertex {
+        position: v_front.position + t * (v_back.position - v_front.position),
+        uv: v_front.uv + t * (v_back.uv - v_front.uv),
+        normal: v_front.normal + t * (v_back.normal - v_front.normal),
+    }
 }
 
+/// Handle the rendering from after clipping (but before perspective division).
 #[inline(always)]
 fn after_near_clipping<S: Shader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
-    positions_clip: [Vec4; 3],
-    vertices: [Vertex; 3],
+    vertices_clip: [Vertex<Vec4>; 3],
     shader: &S,
 ) {
     debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
-    let (positions_ndc, depths): ([Vec2; 3], [f32; 3]) = {
-        let positions = positions_clip.map(|p_clip| p_clip.xyz() / p_clip.w);
-        (positions.map(|p| p.xy()), positions.map(|p| p.z))
-    };
+
+    // Perspective division.
+
+    let vertices_ndc: [Vertex; 3] = vertices_clip.map(|vertex| {
+        let position = vertex.position.xyz() / vertex.position.w;
+        vertex.with_position(position)
+    });
+    let positions_ndc: [Vec2; 3] = vertices_ndc.map(|vertex| vertex.position.xy());
+    let depths: [f32; 3] = vertices_ndc.map(|vertex| vertex.position.z);
+    let normals: [Vec3; 3] = [
+        vertices_clip[0].position.w * model_view.transform_vector3(vertices_clip[0].normal),
+        vertices_clip[1].position.w * model_view.transform_vector3(vertices_clip[1].normal),
+        vertices_clip[2].position.w * model_view.transform_vector3(vertices_clip[2].normal),
+    ];
     if !is_clockwise_winding(positions_ndc) {
         return;
     }
-    let normals: [Vec3; 3] = [
-        positions_clip[0].w * model_view.transform_vector3(vertices[0].normal),
-        positions_clip[1].w * model_view.transform_vector3(vertices[1].normal),
-        positions_clip[2].w * model_view.transform_vector3(vertices[2].normal),
-    ];
+
+    // Rasterization.
+
+    // Bounding box of pixels that we need to sample.
     let [x_min, x_max, y_min, y_max]: [u32; 4] = {
         let [p0, p1, p2] = positions_ndc;
-        let x_min_ndc = p0.x.min(p1.x).min(p2.x);
-        let x_max_ndc = p0.x.max(p1.x).max(p2.x);
-        let y_min_ndc = p0.y.min(p1.y).min(p2.y);
-        let y_max_ndc = p0.y.max(p1.y).max(p2.y);
+        let min_ndc = p0.min(p1).min(p2);
+        let max_ndc = p0.max(p1).max(p2);
         let width = canvas.width;
         let height = canvas.height;
+        // Y min/max need to be inverted because NDC is down-to-up whereas pixel coordinate is up-
+        // to-down.
         [
-            (ndc_to_pixel_x(x_min_ndc, width).floor().max(0.) as u32).min(width - 1),
-            (ndc_to_pixel_x(x_max_ndc, width).ceil().max(0.) as u32).min(width - 1),
-            (ndc_to_pixel_y(y_max_ndc, height).floor().max(0.) as u32).min(height - 1),
-            (ndc_to_pixel_y(y_min_ndc, height).ceil().max(0.) as u32).min(height - 1),
+            (ndc_to_pixel_x(min_ndc.x, width).floor().max(0.) as u32).min(width - 1),
+            (ndc_to_pixel_x(max_ndc.x, width).ceil().max(0.) as u32).min(width - 1),
+            (ndc_to_pixel_y(max_ndc.y, height).floor().max(0.) as u32).min(height - 1),
+            (ndc_to_pixel_y(min_ndc.y, height).ceil().max(0.) as u32).min(height - 1),
         ]
     };
     for x_pixel in x_min..=x_max {
         for y_pixel in y_min..=y_max {
             let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
+            let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
+            let pixel_sample = unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) };
             let p_ndc = vec2(
                 pixel_to_ndc_x(x_pixel, canvas.width),
                 pixel_to_ndc_y(y_pixel, canvas.height),
@@ -202,7 +215,6 @@ fn after_near_clipping<S: Shader + ?Sized>(
                 continue;
             };
             let depth = triangular_interpolate(weights, depths);
-            let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
             if *depth_sample <= depth {
                 continue;
             }
@@ -210,25 +222,32 @@ fn after_near_clipping<S: Shader + ?Sized>(
             let fragment_input = FragmentInput {
                 position: vec3(p_ndc.x, p_ndc.y, depth),
                 depth,
-                uv: vec2(
-                    triangular_interpolate(weights, vertices.map(|v| v.uv.x)),
-                    triangular_interpolate(weights, vertices.map(|v| v.uv.y)),
-                ),
-                normal: vec3(
-                    triangular_interpolate(weights, normals.map(|v| v.x)),
-                    triangular_interpolate(weights, normals.map(|v| v.y)),
-                    triangular_interpolate(weights, normals.map(|v| v.z)),
-                ),
+                uv: triangular_interpolate_vec2(weights, vertices_clip.map(|v| v.uv)),
+                normal: triangular_interpolate_vec3(weights, normals),
             };
             let fragment_result = shader.fragment(fragment_input);
-            *unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) } =
-                RgbaU8::from(fragment_result);
+            *pixel_sample = RgbaU8::from(fragment_result);
         }
     }
 }
 
 fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
     w0 * x0 + w1 * x1 + w2 * x2
+}
+
+fn triangular_interpolate_vec2(weights: [f32; 3], [v0, v1, v2]: [Vec2; 3]) -> Vec2 {
+    vec2(
+        triangular_interpolate(weights, [v0.x, v1.x, v2.x]),
+        triangular_interpolate(weights, [v0.y, v1.y, v2.y]),
+    )
+}
+
+fn triangular_interpolate_vec3(weights: [f32; 3], [v0, v1, v2]: [Vec3; 3]) -> Vec3 {
+    vec3(
+        triangular_interpolate(weights, [v0.x, v1.x, v2.x]),
+        triangular_interpolate(weights, [v0.y, v1.y, v2.y]),
+        triangular_interpolate(weights, [v0.z, v1.z, v2.z]),
+    )
 }
 
 fn ndc_to_pixel_x(x_ndc: f32, width: u32) -> f32 {
@@ -326,16 +345,14 @@ impl Camera {
         let aspect = frame_width / frame_height;
         let fovy = self.fov_y_degrees.to_radians();
         let near = 0.1;
-        let far = 100.;
 
-        Mat4::perspective_rh(fovy, aspect, near, far)
+        Mat4::perspective_infinite_rh(fovy, aspect, near)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
-#[repr(C)]
-pub struct Vertex {
-    pub position: Vec3,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Vertex<Position: Copy = Vec3> {
+    pub position: Position,
     pub uv: Vec2,
     pub normal: Vec3,
 }
@@ -350,6 +367,16 @@ impl Vertex {
             position: vec3(x, y, z),
             uv: vec2(u, v),
             normal: vec3(x_normal, y_normal, z_normal),
+        }
+    }
+}
+
+impl<T: Copy> Vertex<T> {
+    pub const fn with_position<U: Copy>(self, position: U) -> Vertex<U> {
+        Vertex {
+            position,
+            uv: self.uv,
+            normal: self.normal,
         }
     }
 }
