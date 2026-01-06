@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use clap::Parser as _;
 use muilib::{
     Canvas as _, EventLoopExt as _, RectSize, Srgb, Srgba,
     cgmath::*,
     winit::{
         application::ApplicationHandler,
+        dpi::PhysicalSize,
         event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent},
         event_loop::{ActiveEventLoop, EventLoop},
         keyboard::PhysicalKey,
@@ -14,13 +16,62 @@ use muilib::{
 
 mod key_code;
 
+#[derive(Debug, Clone, clap::Parser)]
+struct ProgramArgs {
+    #[command(subcommand)]
+    subcommand: ProgramSubcommand,
+}
+
+#[derive(Debug, Clone, clap::Subcommand)]
+enum ProgramSubcommand {
+    Run(SubcommandRunArgs),
+    PackRes(SubcommandPackResArgs),
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+struct SubcommandRunArgs {
+    /// Path of the respack file.
+    #[clap(short = 'r', long = "respack", default_value_t = String::from("resources.respack.bin"))]
+    respack: String,
+    /// Preferred display width.
+    #[clap(short = 'W', long = "display-width", default_value_t = 800)]
+    display_width: u32,
+    /// Preferred display height.
+    #[clap(short = 'H', long = "display-height", default_value_t = 600)]
+    display_height: u32,
+}
+
+#[derive(Debug, Clone, clap::Parser)]
+struct SubcommandPackResArgs {
+    /// Path of the resource directory.
+    #[clap(short = 'd', long = "res-dir", default_value_t = String::from("res"))]
+    res_dir: String,
+    /// Path of the output file.
+    #[clap(short = 'o', long = "output", default_value_t = String::from("resources.respack.bin"))]
+    output: String,
+}
+
 fn main() {
     env_logger::init();
 
-    let resources = muilib::AppResources::new("muilib_backend/res".into());
+    let program_args = ProgramArgs::parse();
+
+    match program_args.subcommand {
+        ProgramSubcommand::PackRes(args) => subcommand_pack_res(args),
+        ProgramSubcommand::Run(args) => subcommand_run(args),
+    }
+}
+
+fn subcommand_pack_res(args: SubcommandPackResArgs) {
+    softras::pack_resources(args.res_dir.as_ref(), args.output.as_ref());
+}
+
+fn subcommand_run(args: SubcommandRunArgs) {
+    _ = args;
+    let muilib_resources = muilib::AppResources::new("muilib_backend/res".into());
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop
-        .run_lazy_initialized_app::<App, _>(&resources)
+        .run_lazy_initialized_app::<App, _>((args, &muilib_resources))
         .unwrap();
 }
 
@@ -28,6 +79,8 @@ struct App<'cx> {
     window: Arc<Window>,
     uicx: muilib::UiContext<'cx>,
     canvas: muilib::WindowCanvas<'cx>,
+    max_width: u32,
+    max_height: u32,
     game: softras::Game,
     image_view: muilib::ImageView,
     overlay_text_view: muilib::TextView<'cx>,
@@ -89,25 +142,42 @@ impl<'cx> App<'cx> {
     }
 }
 
-impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<'cx> {
-    fn new(resources: &'cx muilib::AppResources, event_loop: &ActiveEventLoop) -> Self {
+impl<'cx> muilib::LazyApplicationHandler<(SubcommandRunArgs, &'cx muilib::AppResources), ()>
+    for App<'cx>
+{
+    fn new(
+        (args, resources): (SubcommandRunArgs, &'cx muilib::AppResources),
+        event_loop: &ActiveEventLoop,
+    ) -> Self {
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("Software Rasterizer"))
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("Software Rasterizer")
+                        .with_inner_size(PhysicalSize::new(
+                            args.display_width,
+                            args.display_height,
+                        )),
+                )
                 .unwrap(),
         );
 
         let (uicx, canvas) =
             muilib::UiContext::create_for_window(resources, window.clone()).unwrap();
         Self {
+            window,
             canvas,
             overlay_text_view: muilib::TextView::new(&uicx)
                 .with_font_size(16.)
                 .with_bg_color(Srgba::from_hex(0x80808080)),
-            image_view: muilib::ImageView::new(RectSize::new(480., 320.)),
+            image_view: muilib::ImageView::new(RectSize::new(
+                args.display_width as f32,
+                args.display_height as f32,
+            )),
             game: softras::Game::new(),
             uicx,
-            window,
+            max_width: args.display_width,
+            max_height: args.display_height,
             cursor_captured: false,
             cursor_position: None,
         }
@@ -115,13 +185,7 @@ impl<'cx> muilib::LazyApplicationHandler<&'cx muilib::AppResources, ()> for App<
 }
 
 impl<'cx> ApplicationHandler for App<'cx> {
-    fn resumed(&mut self, _: &ActiveEventLoop) {
-        if self.cursor_captured {
-            self.capture_cursor();
-        } else {
-            self.uncapture_cursor();
-        }
-    }
+    fn resumed(&mut self, _: &ActiveEventLoop) {}
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
@@ -139,18 +203,18 @@ impl<'cx> ApplicationHandler for App<'cx> {
                     self.window.scale_factor(),
                     None,
                 );
-                let width_f = size.width as f32;
-                let height_f = size.height as f32;
-                let preferred_width: f32 = match cfg!(debug_assertions) {
-                    true => 240.,
-                    false => 800.,
+                let width = size.width as f32;
+                let height = size.height as f32;
+                let max_width = self.max_width as f32;
+                let max_height = self.max_height as f32;
+                let (width, height) = match width > height {
+                    true => (max_width, max_width / width * height),
+                    false => (max_height / height * width, max_height),
                 };
-                let preferred_height = 0.75 * preferred_width;
-                let (width, height) = match width_f > height_f {
-                    true => (preferred_width, preferred_width / width_f * height_f),
-                    false => (preferred_height / height_f * width_f, preferred_height),
-                };
-                self.game.notify_display_resize(width as u32, height as u32);
+                self.game.notify_display_resize(
+                    (width as u32).min(size.width),
+                    (height as u32).min(size.height),
+                );
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -226,6 +290,11 @@ impl<'cx> ApplicationHandler for App<'cx> {
             WindowEvent::Focused(false) => {
                 self.cursor_position = None;
                 self.game.notify_unfocused();
+                if self.cursor_captured {
+                    self.capture_cursor();
+                } else {
+                    self.uncapture_cursor();
+                }
             }
             _ => (),
         }

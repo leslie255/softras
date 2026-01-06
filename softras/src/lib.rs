@@ -1,7 +1,8 @@
-#![feature(iter_array_chunks)]
+#![feature(iter_array_chunks, read_array, normalize_lexically)] // FIXME: use of unstable features
 
 use std::{
     fmt::Write as _,
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -10,10 +11,28 @@ use glam::*;
 mod key_code;
 mod obj_file;
 mod render;
+mod respack;
 
 pub use key_code::*;
 use obj_file::*;
 use render::*;
+use respack::*;
+
+pub fn pack_resources(res_dir: &Path, output: &Path) {
+    // Encode Test.
+    let mut res_packer = ResourcePacker::new(res_dir);
+    res_packer.append_file("hello_world.txt").unwrap();
+    res_packer.append_file("teapot.obj").unwrap();
+    res_packer.finish_into_file(output).unwrap();
+
+    // Decode Test.
+    let respack = ResPack::from_file(output).unwrap();
+    dbg!(
+        respack
+            .get("hello_world.txt")
+            .map(|bytes| str::from_utf8(bytes).unwrap())
+    );
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameOutput<'game> {
@@ -261,7 +280,7 @@ impl Game {
             Some(fps) => _ = write!(&mut self.overlay_text, "{:3.0}", fps),
             None => _ = write!(&mut self.overlay_text, "***"),
         };
-        _ = write!(&mut self.overlay_text, ", avg over 48: ");
+        _ = write!(&mut self.overlay_text, ", avg over 12: ");
         match self.fps_meter.average_fps() {
             Some(avarage_fps) => _ = writeln!(&mut self.overlay_text, "{:3.0}", avarage_fps),
             None => _ = writeln!(&mut self.overlay_text, "***"),
@@ -318,6 +337,7 @@ impl Game {
             };
         draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
         draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
+        draw_teapot(0.7, vec3(-3., 0., 4.), 225., Rgb::from_hex(0xA080E0));
 
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
             let shader = DirectionalShadingShader {
@@ -341,6 +361,7 @@ impl Game {
             }
         };
         draw_cube(1., vec3(6., 0., 2.), 30., Rgb::from_hex(0x008080));
+        draw_cube(1.5, vec3(0., 0., 6.), 45., Rgb::from_hex(0x800080));
 
         #[rustfmt::skip]
         let ground_vertices = [
@@ -428,9 +449,9 @@ impl Game {
 
 #[derive(Debug, Clone, Copy)]
 struct FpsMeter {
-    frame_times: [f64; 48],
+    frame_times: [f64; 12],
     cursor: usize,
-    frame_time: Option<f64>,
+    average_frame_time: Option<f64>,
 }
 
 impl Default for FpsMeter {
@@ -444,7 +465,7 @@ impl FpsMeter {
         Self {
             frame_times: [0.; _],
             cursor: 0,
-            frame_time: None,
+            average_frame_time: None,
         }
     }
 
@@ -454,7 +475,7 @@ impl FpsMeter {
         self.cursor %= self.frame_times.len();
         self.frame_times[i] = frame_time;
         let frame_time = self.frame_times.iter().sum::<f64>() / (self.frame_times.len() as f64);
-        match &mut self.frame_time {
+        match &mut self.average_frame_time {
             Some(frame_time_) => *frame_time_ = frame_time,
             frame_time_ @ None if self.cursor == 0 => *frame_time_ = Some(frame_time),
             None => (),
@@ -462,7 +483,7 @@ impl FpsMeter {
     }
 
     fn average_frame_time(&self) -> Option<f64> {
-        self.frame_time
+        self.average_frame_time
     }
 
     fn average_fps(&self) -> Option<f64> {
@@ -470,7 +491,7 @@ impl FpsMeter {
     }
 
     fn fps(&self) -> Option<f64> {
-        if self.frame_time.is_some() || self.cursor >= 1 {
+        if self.average_frame_time.is_some() || self.cursor >= 1 {
             let i = self
                 .cursor
                 .checked_sub(1)
