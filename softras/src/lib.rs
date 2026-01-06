@@ -1,3 +1,5 @@
+#![feature(iter_array_chunks)]
+
 use std::{
     fmt::Write as _,
     time::{Duration, Instant, SystemTime},
@@ -6,9 +8,11 @@ use std::{
 use glam::*;
 
 mod key_code;
+mod obj_file;
 mod render;
 
 pub use key_code::*;
+use obj_file::*;
 use render::*;
 
 #[derive(Debug, Clone, Copy)]
@@ -32,9 +36,10 @@ pub struct Game {
     key_states: [bool; 256],
     cursor_position: Option<Vec2>,
     fps_meter: FpsMeter,
-    camera: Camera,
     previous_frame_instant: Option<Instant>,
     is_paused: bool,
+    camera: Camera,
+    teapot_vertices: Vec<Vertex>,
 }
 
 impl Default for Game {
@@ -53,14 +58,15 @@ impl Game {
             key_states: [false; _],
             cursor_position: None,
             fps_meter: FpsMeter::new(),
+            previous_frame_instant: None,
+            is_paused: false,
             camera: Camera {
-                position: vec3(0., 1., 40.),
+                position: vec3(0., 1., 10.),
                 pitch_degrees: 0.,
                 yaw_degrees: 0.,
                 fov_y_degrees: 90.,
             },
-            previous_frame_instant: None,
-            is_paused: false,
+            teapot_vertices: load_obj(Self::TEAPOT_OBJ),
         }
     }
 
@@ -152,6 +158,8 @@ impl Game {
     }
 
     /* === End of Public Interface === */
+
+    const TEAPOT_OBJ: &str = include_str!("../res/teapot.obj");
 
     const CUBE_VERTICES: [Vertex; 24] = [
         // South
@@ -283,7 +291,25 @@ impl Game {
             .camera
             .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
 
-        self.draw_cubes(projection, view);
+        // self.draw_cubes(projection, view);
+        let mut draw_teapot =
+            |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
+                let shader = DirectionalShadingShader {
+                    color,
+                    light_direction: view.transform_vector3(vec3(-1., -1., -1.).normalize()),
+                    shading_intensity: 1.4,
+                    ..Default::default()
+                };
+                let model = Mat4::from_translation(position)
+                    * Mat4::from_scale(vec3(scale, scale, scale))
+                    * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+                let model_view = view * model;
+                for triangle in self.teapot_vertices.iter().copied().array_chunks::<3>() {
+                    draw_triangle(&mut self.canvas, model_view, projection, triangle, &shader);
+                }
+            };
+        draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
+        draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
 
         #[rustfmt::skip]
         let ground_vertices = [
@@ -340,6 +366,7 @@ impl Game {
                     let size_vec3 = vec3(size, size, size);
                     let shader = DirectionalShadingShader {
                         color,
+                        light_direction: view.transform_vector3(vec3(-1., -1., -1.).normalize()),
                         ..Default::default()
                     };
                     let model = Mat4::from_translation(position)
