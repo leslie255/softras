@@ -17,7 +17,7 @@ The project is divided into two cargo crates:
 To build and run:
 
 ```bash
-$ cargo run --release --package muilib_backend
+$ cargo run --release --package muilib_backend -- run
 ```
 
 This command has to be executed at the root of the project directory, as `muilib_backend` reads from `muilib_backend/res` directory for resource files.
