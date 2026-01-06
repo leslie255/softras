@@ -22,11 +22,11 @@ $ cargo run --release --package muilib_backend
 
 This command has to be executed at the root of the project directory, as `muilib_backend` reads from `muilib_backend/res` directory for resource files.
 
-## Q: But why is ther WGSL code?
+## Q: But why is there WGSL code?
 
 `muilib_backend`, which handles window creation and event handling, uses WGSL code in its resource directory. This is because it uses the GUI library [`muilib`](https://github.com/leslie255/muilib) which requires some shader to be loaded to render GUI elements (the debug overlay text and presenting the frame buffer as an image, in the case of this project).
 
-As stated in [Project Structure](https://github.com/leslie255/softras?tab=readme-ov-file#project-structure), the rendering happens in `softras`, and is platform-independant and does not access GPU.
+As stated in [Project Structure](https://github.com/leslie255/softras?tab=readme-ov-file#project-structure), the rendering happens in `softras`, and is platform-independent and does not access GPU.
 
 ## LICENSE
 
