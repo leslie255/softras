@@ -175,11 +175,17 @@ fn after_near_clipping<S: Shader + ?Sized>(
     });
     let positions_ndc: [Vec2; 3] = vertices_ndc.map(|vertex| vertex.position.xy());
     let depths: [f32; 3] = vertices_ndc.map(|vertex| vertex.position.z);
+    let normal_transform = model_view.inverse().transpose();
     let normals: [Vec3; 3] = [
-        vertices_clip[0].position.w * model_view.transform_vector3(vertices_clip[0].normal),
-        vertices_clip[1].position.w * model_view.transform_vector3(vertices_clip[1].normal),
-        vertices_clip[2].position.w * model_view.transform_vector3(vertices_clip[2].normal),
+        vertices_clip[0].position.w * normal_transform.transform_vector3(vertices_clip[0].normal),
+        vertices_clip[1].position.w * normal_transform.transform_vector3(vertices_clip[1].normal),
+        vertices_clip[2].position.w * normal_transform.transform_vector3(vertices_clip[2].normal),
     ];
+    // let normals: [Vec3; 3] = [
+    //     vertices_clip[0].position.w * vertices_clip[0].normal,
+    //     vertices_clip[1].position.w * vertices_clip[1].normal,
+    //     vertices_clip[2].position.w * vertices_clip[2].normal,
+    // ];
     if !is_clockwise_winding(positions_ndc) {
         return;
     }

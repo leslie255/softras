@@ -2,7 +2,7 @@
 
 use std::{
     fmt::Write as _,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use glam::*;
@@ -143,12 +143,14 @@ impl Game {
 
     pub fn notify_cursor_scrolled_lines(&mut self, x: f32, y: f32) {
         _ = x;
-        _ = y;
+        let fov = &mut self.camera.fov_y_degrees;
+        *fov = (*fov + 0.1 * y * 14.).clamp(20., 160.);
     }
 
     pub fn notify_cursor_scrolled_pixels(&mut self, x: f32, y: f32) {
         _ = x;
-        _ = y;
+        let fov = &mut self.camera.fov_y_degrees;
+        *fov = (*fov + 0.1 * y).clamp(20., 160.);
     }
 
     pub fn notify_focused(&mut self) {}
@@ -233,10 +235,17 @@ impl Game {
 
         // Name and Version.
         let crate_version = env!("CARGO_PKG_VERSION");
-        _ = writeln!(
-            &mut self.overlay_text,
-            "SOFTWARE RASTERIZER v{crate_version}"
-        );
+        if cfg!(debug_assertions) {
+            _ = writeln!(
+                &mut self.overlay_text,
+                "SOFTWARE RASTERIZER v{crate_version} (DEBUG BUILD)"
+            );
+        } else {
+            _ = writeln!(
+                &mut self.overlay_text,
+                "SOFTWARE RASTERIZER v{crate_version}"
+            );
+        }
 
         // Resolution.
         _ = writeln!(
@@ -290,26 +299,48 @@ impl Game {
         let projection = self
             .camera
             .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
+        let light_direction = view.transform_vector3(vec3(-1., -1., -1.)).normalize();
 
-        // self.draw_cubes(projection, view);
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
                 let shader = DirectionalShadingShader {
                     color,
-                    light_direction: view.transform_vector3(vec3(-1., -1., -1.).normalize()),
+                    light_direction,
                     shading_intensity: 1.4,
-                    ..Default::default()
+                    highlightness: 0.7,
                 };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
-                let model_view = view * model;
-                for triangle in self.teapot_vertices.iter().copied().array_chunks::<3>() {
-                    draw_triangle(&mut self.canvas, model_view, projection, triangle, &shader);
+                for indices in self.teapot_vertices.iter().copied().array_chunks::<3>() {
+                    draw_triangle(&mut self.canvas, view * model, projection, indices, &shader);
                 }
             };
         draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
         draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
+
+        let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
+            let shader = DirectionalShadingShader {
+                color,
+                light_direction,
+                shading_intensity: 1.,
+                ..Default::default()
+            };
+            let model = Mat4::from_translation(position)
+                * Mat4::from_scale(vec3(scale, scale, scale))
+                * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+            for indices in Self::CUBE_INDICIES {
+                let vertices = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
+                draw_triangle(
+                    &mut self.canvas,
+                    view * model,
+                    projection,
+                    vertices,
+                    &shader,
+                );
+            }
+        };
+        draw_cube(1., vec3(6., 0., 2.), 30., Rgb::from_hex(0x008080));
 
         #[rustfmt::skip]
         let ground_vertices = [
@@ -320,7 +351,7 @@ impl Game {
         ];
         let ground_indices = [[0u16, 1, 2], [2, 3, 0]];
         let shader = DirectionalShadingShader {
-            color: Rgb::from_hex(0x202020),
+            color: Rgb::from_hex(0x101820),
             light_direction: vec3(-1., -1., -1.).normalize(),
             ..Default::default()
         };
@@ -335,52 +366,6 @@ impl Game {
                 indices.map(|i| ground_vertices[i as usize]),
                 &shader,
             );
-        }
-    }
-
-    #[allow(dead_code)]
-    fn draw_cubes(&mut self, projection: Mat4, view: Mat4) {
-        let t = (SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0.0f64, |duration| duration.as_secs_f64())
-            % 86400.) as f32;
-        let cubes: [(Vec3, f32, Rgb, f32); _] = [
-            // position, size, color, rotation speed
-            (vec3(-15., 0., 0.), 3., Rgb::from_hex(0x008080), -2.0f32),
-            (vec3(-5., 0., 0.), 5., Rgb::from_hex(0xA06000), 0.5f32),
-            (vec3(5., 0., 0.), 4., Rgb::from_hex(0x00A060), -1.0f32),
-            (vec3(15., 0., 0.), 3., Rgb::from_hex(0x800080), 1.5f32),
-        ];
-        for y_repeat in 0i32..=3i32 {
-            for z_repeat in -1i32..=2i32 {
-                for (position, size, color, rotation_speed) in cubes {
-                    let position = Vec3 {
-                        y: y_repeat as f32 * 10. + 3.,
-                        z: z_repeat as f32 * 10.,
-                        ..position
-                    };
-                    let rotation_speed = match z_repeat % 2 == 0 {
-                        true => rotation_speed,
-                        false => -rotation_speed,
-                    };
-                    let size_vec3 = vec3(size, size, size);
-                    let shader = DirectionalShadingShader {
-                        color,
-                        light_direction: view.transform_vector3(vec3(-1., -1., -1.).normalize()),
-                        ..Default::default()
-                    };
-                    let model = Mat4::from_translation(position)
-                        * Mat4::from_rotation_x(t * rotation_speed)
-                        * Mat4::from_rotation_z(t * rotation_speed)
-                        * Mat4::from_translation(-0.5 * size_vec3)
-                        * Mat4::from_scale(size_vec3);
-                    let model_view = view * model;
-                    for indices in Self::CUBE_INDICIES {
-                        let triangle = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-                        draw_triangle(&mut self.canvas, model_view, projection, triangle, &shader);
-                    }
-                }
-            }
         }
     }
 

@@ -62,8 +62,8 @@ pub struct DirectionalShadingShader {
     /// The default value is `0.5`.
     pub shading_intensity: f32,
     /// Controls how much of the lighting should be expressed in highlight vs. shadow.
-    /// `highlightness = 1.` would cause only subtraction to the color values, i.e. shadow.
-    /// `highlightness = 0.` would cause only addition to the color values, i.e. highlight.
+    /// `highlightness = 0.` would cause only subtraction to the color values, i.e. shadow.
+    /// `highlightness = 1.` would cause only addition to the color values, i.e. highlight.
     ///
     /// The default value is `0.6`.
     pub highlightness: f32,
@@ -85,11 +85,11 @@ impl Shader for DirectionalShadingShader {
         let normal = input.normal.normalize_or(vec3(1., 0., 0.));
         let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
         let theta = f32::acos(normal.dot(light_direction));
-        let shading = theta / (2. * std::f32::consts::PI);
+        let shading = theta / (2. * std::f32::consts::PI) - 1. + self.highlightness;
         Rgb {
-            r: self.color.r + self.shading_intensity * (shading - 1. + self.highlightness),
-            g: self.color.g + self.shading_intensity * (shading - 1. + self.highlightness),
-            b: self.color.b + self.shading_intensity * (shading - 1. + self.highlightness),
+            r: self.color.r + self.shading_intensity * shading,
+            g: self.color.g + self.shading_intensity * shading,
+            b: self.color.b + self.shading_intensity * shading,
         }
         .into()
     }
