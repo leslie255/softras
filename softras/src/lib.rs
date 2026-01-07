@@ -41,6 +41,7 @@ pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceErr
 
     let mut res_packer = ResourcePacker::new(res_dir);
     pack(&mut res_packer, "models/teapot.obj")?;
+    pack(&mut res_packer, "models/suzanne.obj")?;
 
     res_packer
         .finish_into_file(output)
@@ -85,6 +86,7 @@ pub struct Game {
     is_paused: bool,
     camera: Camera,
     teapot: Obj<obj::Position>,
+    suzanne: Obj<obj::TexturedVertex>,
 }
 
 #[derive(Debug, Display, Error, From)]
@@ -114,8 +116,6 @@ impl Game {
 
         let respack = ResPack::from_vec(respack_bytes)?;
 
-        let teapot_obj = get_resource(&respack, "models/teapot.obj")?;
-
         Ok(Self {
             canvas: Canvas::new(),
             overlay_text: String::new(),
@@ -131,7 +131,8 @@ impl Game {
                 yaw_degrees: 4. * f32::EPSILON,
                 fov_y_degrees: 90.,
             },
-            teapot: obj::load_obj(teapot_obj).unwrap(),
+            teapot: obj::load_obj(get_resource(&respack, "models/teapot.obj")?).unwrap(),
+            suzanne: obj::load_obj(get_resource(&respack, "models/suzanne.obj")?).unwrap(),
         })
     }
 
@@ -389,11 +390,42 @@ impl Game {
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
-                draw_object(&mut self.canvas, view * model, projection, &shader, &self.teapot);
+                unsafe {
+                    draw_object_unchecked(
+                        &mut self.canvas,
+                        view * model,
+                        projection,
+                        &shader,
+                        &self.teapot,
+                    );
+                }
             };
         draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
         draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
         draw_teapot(0.7, vec3(-3., 0., 4.), 225., Rgb::from_hex(0xA080E0));
+
+        let mut draw_suzanne =
+            |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
+                let shader = DirectionalShadingShader {
+                    color,
+                    light_direction,
+                    shading_intensity: 1.3,
+                    highlightness: 0.7,
+                };
+                let model = Mat4::from_translation(position)
+                    * Mat4::from_scale(vec3(scale, scale, scale))
+                    * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+                unsafe {
+                    draw_object_unchecked(
+                        &mut self.canvas,
+                        view * model,
+                        projection,
+                        &shader,
+                        &self.suzanne,
+                    );
+                }
+            };
+        draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
 
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
             let shader = DirectionalShadingShader {

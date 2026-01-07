@@ -424,6 +424,7 @@ impl IntoVertex for obj::TexturedVertex {
     }
 }
 
+#[allow(dead_code)]
 pub fn draw_object<S: Shader + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
@@ -433,6 +434,21 @@ pub fn draw_object<S: Shader + ?Sized, V: IntoVertex>(
 ) {
     for indices in object.indices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(indices.map(|i| object.vertices[i as usize]));
+        draw_triangle(canvas, model_view, projection, shader, vertices);
+    }
+}
+
+#[allow(dead_code)]
+pub unsafe fn draw_object_unchecked<S: Shader + ?Sized, V: IntoVertex>(
+    canvas: &mut Canvas,
+    model_view: Mat4,
+    projection: Mat4,
+    shader: &S,
+    object: &Obj<V>,
+) {
+    for indices in object.indices.iter().copied().array_chunks::<3>() {
+        let vertices =
+            V::into_vertex(indices.map(|i| unsafe { *object.vertices.get_unchecked(i as usize) }));
         draw_triangle(canvas, model_view, projection, shader, vertices);
     }
 }
