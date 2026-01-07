@@ -199,4 +199,3 @@ pub fn winit_to_softras(key_code: winit::keyboard::KeyCode) -> softras::KeyCode 
         _ => softras::KeyCode::Unidentified,
     }
 }
-

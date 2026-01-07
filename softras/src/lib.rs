@@ -1,19 +1,21 @@
 #![feature(iter_array_chunks, read_array, normalize_lexically)] // FIXME: use of unstable features
 
 use std::{
-    fmt::Write as _, io, path::{Path, PathBuf}, time::{Duration, Instant}
+    fmt::Write as _,
+    io,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use derive_more::{Display, Error, From};
 use glam::*;
 
 mod key_code;
-mod obj_file;
 mod render;
 mod respack;
 
 pub use key_code::*;
-use obj_file::*;
+use obj::Obj;
 use render::*;
 use respack::*;
 
@@ -82,7 +84,7 @@ pub struct Game {
     previous_frame_instant: Option<Instant>,
     is_paused: bool,
     camera: Camera,
-    teapot_vertices: Vec<Vertex>,
+    teapot: Obj<obj::Position>,
 }
 
 #[derive(Debug, Display, Error, From)]
@@ -123,12 +125,13 @@ impl Game {
             previous_frame_instant: None,
             is_paused: false,
             camera: Camera {
+                // Add some small deviations so the values never look too rounded.
                 position: vec3(0., 1., 10.),
-                pitch_degrees: 0.,
-                yaw_degrees: 0.,
+                pitch_degrees: 4. * f32::EPSILON,
+                yaw_degrees: 4. * f32::EPSILON,
                 fov_y_degrees: 90.,
             },
-            teapot_vertices: load_obj(std::str::from_utf8(teapot_obj).unwrap()),
+            teapot: obj::load_obj(teapot_obj).unwrap(),
         })
     }
 
@@ -220,10 +223,14 @@ impl Game {
         *fov = (*fov + rate * 0.1 * y).clamp(20., 160.);
     }
 
-    pub fn notify_focused(&mut self) {}
+    pub fn notify_focused(&mut self) {
+        bytemuck::fill_zeroes(&mut self.key_states);
+        self.cursor_position = None;
+    }
 
     pub fn notify_unfocused(&mut self) {
         bytemuck::fill_zeroes(&mut self.key_states);
+        self.cursor_position = None;
     }
 
     /* === End of Public Interface === */
@@ -382,9 +389,7 @@ impl Game {
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
-                for indices in self.teapot_vertices.iter().copied().array_chunks::<3>() {
-                    draw_triangle(&mut self.canvas, view * model, projection, indices, &shader);
-                }
+                draw_object(&mut self.canvas, view * model, projection, &shader, &self.teapot);
             };
         draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
         draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
@@ -406,8 +411,8 @@ impl Game {
                     &mut self.canvas,
                     view * model,
                     projection,
-                    vertices,
                     &shader,
+                    vertices,
                 );
             }
         };
@@ -435,8 +440,8 @@ impl Game {
                 &mut self.canvas,
                 view * model,
                 projection,
-                indices.map(|i| ground_vertices[i as usize]),
                 &shader,
+                indices.map(|i| ground_vertices[i as usize]),
             );
         }
     }

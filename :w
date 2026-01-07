@@ -76,8 +76,8 @@ pub fn draw_triangle<S: Shader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
     vertices: [Vertex; 3],
+    shader: &S,
 ) {
     let mvp = projection * model_view;
     let vertices_clip: [Vertex<Vec4>; 3] = vertices.map(|vertex| {
@@ -388,51 +388,11 @@ impl<T: Copy> Vertex<T> {
     }
 }
 
-pub trait IntoVertex: Copy {
-    fn into_vertex(selfs: [Self; 3]) -> [Vertex; 3];
-}
-
-impl IntoVertex for obj::Position {
-    fn into_vertex(positions: [Self; 3]) -> [Vertex; 3] {
-        let positions @ [p0, p1, p2] = positions.map(|p| Vec3::from_array(p.position));
-        let normal = (p1 - p0).cross(p2 - p0);
-        positions.map(|position| Vertex {
-            position,
-            uv: vec2(0., 0.),
-            normal,
-        })
-    }
-}
-
-impl IntoVertex for obj::Vertex {
-    fn into_vertex(vertices: [Self; 3]) -> [Vertex; 3] {
-        vertices.map(|vertex| Vertex {
-            position: Vec3::from_array(vertex.position),
-            uv: vec2(0., 0.),
-            normal: Vec3::from_array(vertex.normal),
-        })
-    }
-}
-
-impl IntoVertex for obj::TexturedVertex {
-    fn into_vertex(vertices: [Self; 3]) -> [Vertex; 3] {
-        vertices.map(|vertex| Vertex {
-            position: Vec3::from_array(vertex.position),
-            uv: vec2(vertex.texture[0], vertex.texture[1]),
-            normal: Vec3::from_array(vertex.normal),
-        })
-    }
-}
-
-pub fn draw_object<S: Shader + ?Sized, V: IntoVertex>(
+pub fn draw_object_position<S: Shader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
+    vertices: [Vertex; 3],
     shader: &S,
-    object: &Obj<V>,
 ) {
-    for indices in object.indices.iter().copied().array_chunks::<3>() {
-        let vertices = V::into_vertex(indices.map(|i| object.vertices[i as usize]));
-        draw_triangle(canvas, model_view, projection, shader, vertices);
-    }
 }
