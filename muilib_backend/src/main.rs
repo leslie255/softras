@@ -1,4 +1,6 @@
-use std::{path::PathBuf, str::FromStr as _, sync::Arc};
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+use std::{fs, path::PathBuf, process::exit, str::FromStr as _, sync::Arc};
 
 use clap::Parser as _;
 use muilib::{
@@ -39,15 +41,18 @@ struct SubcommandRunArgs {
     /// Preferred display height.
     #[clap(short = 'H', long = "display-height", default_value_t = 600)]
     display_height: u32,
+    /// The game's respack file.
+    #[clap(short = 'r', long = "res", default_value_t = String::from("resources.respack.bin"))]
+    res: String,
     /// Muilib's resource directory.
-    #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_res/"))]
+    #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_res"))]
     muilib_res: String,
 }
 
 #[derive(Debug, Clone, clap::Parser)]
 struct SubcommandPackResArgs {
     /// Path of the resource directory.
-    #[clap(short = 'd', long = "res-dir", default_value_t = String::from("res"))]
+    #[clap(short = 'd', long = "res-dir", default_value_t = String::from("softras/res"))]
     res_dir: String,
     /// Path of the output file.
     #[clap(short = 'o', long = "output", default_value_t = String::from("resources.respack.bin"))]
@@ -70,14 +75,41 @@ fn main() {
 }
 
 fn subcommand_pack_res(args: SubcommandPackResArgs) {
-    softras::pack_resources(args.res_dir.as_ref(), args.output.as_ref());
+    match fs::metadata(&args.res_dir) {
+        Ok(metadata) if metadata.is_dir() => (),
+        Ok(_) => {
+            log::error!("path {:?} exists but is not a directory", &args.res_dir);
+            exit(1);
+        }
+        Err(_) => {
+            log::error!("directory {:?} does not exist", &args.res_dir);
+            exit(1);
+        }
+    }
+    softras::pack_resources(args.res_dir.as_ref(), args.output.as_ref())
+        .unwrap_or_else(|error| log::error!("error packing resources: {error}"));
 }
 
 fn subcommand_run(args: SubcommandRunArgs) {
+    match fs::metadata(&args.muilib_res) {
+        Ok(metadata) if metadata.is_dir() => (),
+        Ok(_) => {
+            log::error!("path {:?} exists but is not a directory", &args.muilib_res);
+            exit(1);
+        }
+        Err(_) => {
+            log::error!("directory {:?} does not exist", &args.muilib_res);
+            exit(1);
+        }
+    }
     let muilib_resources = muilib::AppResources::new(PathBuf::from_str(&args.muilib_res).unwrap());
+    let respack_bytes: Vec<u8> = fs::read(&args.res).unwrap_or_else(|error| {
+        log::error!("unable to open file {:?}, error: {error}", &args.res);
+        exit(1);
+    });
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop
-        .run_lazy_initialized_app::<App, _>((args, &muilib_resources))
+        .run_lazy_initialized_app::<App, _>((args, respack_bytes, &muilib_resources))
         .unwrap();
 }
 
@@ -92,6 +124,55 @@ struct App<'cx> {
     overlay_text_view: muilib::TextView<'cx>,
     cursor_captured: bool,
     cursor_position: Option<Vector2<f32>>,
+}
+
+impl<'cx>
+    muilib::LazyApplicationHandler<(SubcommandRunArgs, Vec<u8>, &'cx muilib::AppResources), ()>
+    for App<'cx>
+{
+    fn new(
+        (args, respack_bytes, resources): (SubcommandRunArgs, Vec<u8>, &'cx muilib::AppResources),
+        event_loop: &ActiveEventLoop,
+    ) -> Self {
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("Software Rasterizer")
+                        .with_inner_size(PhysicalSize::new(
+                            args.display_width,
+                            args.display_height,
+                        )),
+                )
+                .unwrap(),
+        );
+
+        let game = softras::Game::new(respack_bytes).unwrap_or_else(|error| {
+            log::error!("unable to initialize game: {error}");
+            exit(1);
+        });
+
+        let (uicx, canvas) =
+            muilib::UiContext::create_for_window(resources, window.clone()).unwrap();
+
+        Self {
+            window,
+            canvas,
+            overlay_text_view: muilib::TextView::new(&uicx)
+                .with_font_size(16.)
+                .with_bg_color(Srgba::from_hex(0x80808080)),
+            image_view: muilib::ImageView::new(RectSize::new(
+                args.display_width as f32,
+                args.display_height as f32,
+            )),
+            game,
+            uicx,
+            max_width: args.display_width,
+            max_height: args.display_height,
+            cursor_captured: false,
+            cursor_position: None,
+        }
+    }
 }
 
 impl<'cx> App<'cx> {
@@ -144,48 +225,6 @@ impl<'cx> App<'cx> {
         match self.window.set_cursor_grab(CursorGrabMode::None) {
             Ok(_) => self.window.set_cursor_visible(true),
             Err(error) => log::error!("unable to unlock cursor: {error}"),
-        }
-    }
-}
-
-impl<'cx> muilib::LazyApplicationHandler<(SubcommandRunArgs, &'cx muilib::AppResources), ()>
-    for App<'cx>
-{
-    fn new(
-        (args, resources): (SubcommandRunArgs, &'cx muilib::AppResources),
-        event_loop: &ActiveEventLoop,
-    ) -> Self {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("Software Rasterizer")
-                        .with_inner_size(PhysicalSize::new(
-                            args.display_width,
-                            args.display_height,
-                        )),
-                )
-                .unwrap(),
-        );
-
-        let (uicx, canvas) =
-            muilib::UiContext::create_for_window(resources, window.clone()).unwrap();
-        Self {
-            window,
-            canvas,
-            overlay_text_view: muilib::TextView::new(&uicx)
-                .with_font_size(16.)
-                .with_bg_color(Srgba::from_hex(0x80808080)),
-            image_view: muilib::ImageView::new(RectSize::new(
-                args.display_width as f32,
-                args.display_height as f32,
-            )),
-            game: softras::Game::new(),
-            uicx,
-            max_width: args.display_width,
-            max_height: args.display_height,
-            cursor_captured: false,
-            cursor_position: None,
         }
     }
 }

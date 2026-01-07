@@ -1,10 +1,10 @@
 #![feature(iter_array_chunks, read_array, normalize_lexically)] // FIXME: use of unstable features
 
 use std::{
-    fmt::Write as _,
-    time::{Duration, Instant},
+    fmt::Write as _, io, path::{Path, PathBuf}, time::{Duration, Instant}
 };
 
+use derive_more::{Display, Error, From};
 use glam::*;
 
 mod key_code;
@@ -17,20 +17,45 @@ use obj_file::*;
 use render::*;
 use respack::*;
 
-pub fn pack_resources(res_dir: &str, output: &str) {
-    // Encode Test.
-    let mut res_packer = ResourcePacker::new(res_dir);
-    res_packer.append_file("test/hello_world.txt").unwrap();
-    res_packer.append_file("teapot.obj").unwrap();
-    res_packer.finish_into_file(output).unwrap();
+/// Packs the needed resources from the directory located in `softras/res` into a one respack file.
+///
+/// # Arguments
+///
+/// * `res_dir` - the path to the `softras/res` directory
+/// * `output` - the output file (e.g. `"resources.respack.bin"`)
+pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceError> {
+    fn pack(res_packer: &mut ResourcePacker, path: &str) -> Result<(), PackResourceError> {
+        res_packer
+            .append_file(path)
+            .map_err(|error| PackResourceError::MissingResource {
+                path: {
+                    let root: &Path = res_packer.root_path().as_ref();
+                    let subpath: &Path = path.as_ref();
+                    root.join(subpath)
+                },
+                error,
+            })
+    }
 
-    // Decode Test.
-    let respack = ResPack::from_file(output).unwrap();
-    dbg!(
-        respack
-            .get("test/hello_world.txt")
-            .map(|bytes| str::from_utf8(bytes).unwrap())
-    );
+    let mut res_packer = ResourcePacker::new(res_dir);
+    pack(&mut res_packer, "models/teapot.obj")?;
+
+    res_packer
+        .finish_into_file(output)
+        .map_err(|error| PackResourceError::OutputFileError {
+            path: PathBuf::from(output),
+            error,
+        })?;
+
+    Ok(())
+}
+
+#[derive(Debug, Display, Error)]
+pub enum PackResourceError {
+    #[display("cannot read file at {}: {error}", path.display())]
+    MissingResource { path: PathBuf, error: io::Error },
+    #[display("cannot write to output file at {:?}: {error}", path.display())]
+    OutputFileError { path: PathBuf, error: io::Error },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,17 +85,36 @@ pub struct Game {
     teapot_vertices: Vec<Vertex>,
 }
 
-impl Default for Game {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Debug, Display, Error, From)]
+pub enum GameInitError {
+    #[display("Malformatted respack: {_0}")]
+    RespackReadError(RespackReadError),
+    #[display("resource {path:?} not found")]
+    MissingResourceItem { path: String },
 }
 
 impl Game {
     /* === Start of Public Interface === */
 
-    pub fn new() -> Self {
-        Self {
+    /// Initialize a new `Game` instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `respack_bytes` - the content of the packed respack file created by `pack_resources`
+    pub fn new(respack_bytes: Vec<u8>) -> Result<Self, GameInitError> {
+        fn get_resource<'a>(respack: &'a ResPack, path: &str) -> Result<&'a [u8], GameInitError> {
+            respack
+                .get(path)
+                .ok_or_else(|| GameInitError::MissingResourceItem {
+                    path: String::from(path),
+                })
+        }
+
+        let respack = ResPack::from_vec(respack_bytes)?;
+
+        let teapot_obj = get_resource(&respack, "models/teapot.obj")?;
+
+        Ok(Self {
             canvas: Canvas::new(),
             overlay_text: String::new(),
             key_states: [false; _],
@@ -84,8 +128,8 @@ impl Game {
                 yaw_degrees: 0.,
                 fov_y_degrees: 90.,
             },
-            teapot_vertices: load_obj(Self::TEAPOT_OBJ),
-        }
+            teapot_vertices: load_obj(std::str::from_utf8(teapot_obj).unwrap()),
+        })
     }
 
     pub fn display_buffer(&self) -> &[u8] {
@@ -164,14 +208,16 @@ impl Game {
 
     pub fn notify_cursor_scrolled_lines(&mut self, x: f32, y: f32) {
         _ = x;
+        let rate = if self.control_is_down() { 4. } else { 1. };
         let fov = &mut self.camera.fov_y_degrees;
-        *fov = (*fov + 0.1 * y * 14.).clamp(20., 160.);
+        *fov = (*fov + rate * 0.1 * y * 14.).clamp(20., 160.);
     }
 
     pub fn notify_cursor_scrolled_pixels(&mut self, x: f32, y: f32) {
         _ = x;
+        let rate = if self.control_is_down() { 4. } else { 1. };
         let fov = &mut self.camera.fov_y_degrees;
-        *fov = (*fov + 0.1 * y).clamp(20., 160.);
+        *fov = (*fov + rate * 0.1 * y).clamp(20., 160.);
     }
 
     pub fn notify_focused(&mut self) {}
@@ -181,8 +227,6 @@ impl Game {
     }
 
     /* === End of Public Interface === */
-
-    const TEAPOT_OBJ: &str = include_str!("../res/teapot.obj");
 
     const CUBE_VERTICES: [Vertex; 24] = [
         // South
@@ -256,10 +300,7 @@ impl Game {
 
         // Pause prompt.
         if self.is_paused {
-            _ = writeln!(
-                &mut self.overlay_text,
-                "[ESC] PAUSED"
-            );
+            _ = writeln!(&mut self.overlay_text, "[ESC] PAUSED");
         }
 
         // Name and version.
