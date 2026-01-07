@@ -57,11 +57,15 @@ struct SubcommandPackResArgs {
 fn main() {
     env_logger::init();
 
-    let program_args = ProgramArgs::parse();
-
-    match program_args.subcommand {
-        ProgramSubcommand::PackRes(args) => subcommand_pack_res(args),
-        ProgramSubcommand::Run(args) => subcommand_run(args),
+    match ProgramArgs::try_parse() {
+        Ok(program_args) => match program_args.subcommand {
+            ProgramSubcommand::PackRes(args) => subcommand_pack_res(args),
+            ProgramSubcommand::Run(args) => subcommand_run(args),
+        },
+        Err(error) => match SubcommandRunArgs::try_parse() {
+            Ok(args) => subcommand_run(args),
+            Err(_) => error.print().unwrap(),
+        },
     }
 }
 
