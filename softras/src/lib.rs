@@ -133,6 +133,9 @@ impl Game {
     }
 
     pub fn notify_key_down(&mut self, key_code: KeyCode) {
+        if key_code == KeyCode::Escape {
+            self.is_paused = !self.is_paused;
+        }
         self.key_states[key_code as usize] = true;
     }
 
@@ -251,7 +254,15 @@ impl Game {
     fn update_overlay_text(&mut self) {
         self.overlay_text.clear();
 
-        // Name and Version.
+        // Pause prompt.
+        if self.is_paused {
+            _ = writeln!(
+                &mut self.overlay_text,
+                "[ESC] PAUSED"
+            );
+        }
+
+        // Name and version.
         let crate_version = env!("CARGO_PKG_VERSION");
         if cfg!(debug_assertions) {
             _ = writeln!(

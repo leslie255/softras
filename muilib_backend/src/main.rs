@@ -40,7 +40,7 @@ struct SubcommandRunArgs {
     #[clap(short = 'H', long = "display-height", default_value_t = 600)]
     display_height: u32,
     /// Muilib's resource directory.
-    #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_backend/res/"))]
+    #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_res/"))]
     muilib_res: String,
 }
 
