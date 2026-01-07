@@ -1,17 +1,16 @@
 //! Handles packing/reading of ResPack format.
 
-// FIXME: convert paths to UNIX style path on windows.
-
 use std::{
     collections::BTreeMap,
     fmt::Debug,
     fs,
     io::{self, Cursor, Read, Seek as _},
     mem::transmute,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use derive_more::{Display, From};
+use typed_path::{Utf8UnixPath, Utf8UnixPathBuf};
 
 pub(crate) const MAGIC_NUMBER: [u8; 8] = *b"RES-PACK";
 
@@ -89,12 +88,12 @@ pub enum RespackReadError {
 
 #[derive(Debug, Clone)]
 pub struct ResourcePacker {
-    root_path: PathBuf,
+    root_path: Utf8UnixPathBuf,
     bytes: Vec<u8>,
 }
 
 impl ResourcePacker {
-    pub fn new(root_path: impl Into<PathBuf>) -> Self {
+    pub fn new(root_path: &str) -> Self {
         Self {
             root_path: root_path.into(),
             bytes: Vec::from(MAGIC_NUMBER),
@@ -115,11 +114,19 @@ impl ResourcePacker {
         self.bytes.extend_from_slice(content);
     }
 
-    pub fn append_file(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
-        let path = path.as_ref();
-        let path = path.normalize_lexically().unwrap_or(path.into());
-        let bytes = fs::read(self.root_path.join(&path))?;
-        self.append_bytes(&path.as_os_str().to_string_lossy(), &bytes);
+    pub fn append_file(&mut self, subpath: &str) -> io::Result<()> {
+        let subpath = Utf8UnixPath::new(subpath);
+        let path = self.root_path.join(subpath);
+        let bytes: Vec<u8> = if cfg!(unix) {
+            fs::read(path.as_str())?
+        } else if cfg!(windows) {
+            let windows_path = path.with_windows_encoding();
+            let s: &str = windows_path.as_ref();
+            fs::read(s)?
+        } else {
+            panic!("unsupported OS for resource packing (supported: Unix-like OS, Windows)");
+        };
+        self.append_bytes(subpath.as_str(), &bytes);
         Ok(())
     }
 

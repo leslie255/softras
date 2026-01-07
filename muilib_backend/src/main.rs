@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, str::FromStr as _, sync::Arc};
 
 use clap::Parser as _;
 use muilib::{
@@ -39,6 +39,9 @@ struct SubcommandRunArgs {
     /// Preferred display height.
     #[clap(short = 'H', long = "display-height", default_value_t = 600)]
     display_height: u32,
+    /// Muilib's resource directory.
+    #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_backend/res/"))]
+    muilib_res: String,
 }
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -67,8 +70,7 @@ fn subcommand_pack_res(args: SubcommandPackResArgs) {
 }
 
 fn subcommand_run(args: SubcommandRunArgs) {
-    _ = args;
-    let muilib_resources = muilib::AppResources::new("muilib_backend/res".into());
+    let muilib_resources = muilib::AppResources::new(PathBuf::from_str(&args.muilib_res).unwrap());
     let event_loop = EventLoop::builder().build().unwrap();
     event_loop
         .run_lazy_initialized_app::<App, _>((args, &muilib_resources))

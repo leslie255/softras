@@ -2,7 +2,6 @@
 
 use std::{
     fmt::Write as _,
-    path::Path,
     time::{Duration, Instant},
 };
 
@@ -18,10 +17,10 @@ use obj_file::*;
 use render::*;
 use respack::*;
 
-pub fn pack_resources(res_dir: &Path, output: &Path) {
+pub fn pack_resources(res_dir: &str, output: &str) {
     // Encode Test.
     let mut res_packer = ResourcePacker::new(res_dir);
-    res_packer.append_file("hello_world.txt").unwrap();
+    res_packer.append_file("test/hello_world.txt").unwrap();
     res_packer.append_file("teapot.obj").unwrap();
     res_packer.finish_into_file(output).unwrap();
 
@@ -29,7 +28,7 @@ pub fn pack_resources(res_dir: &Path, output: &Path) {
     let respack = ResPack::from_file(output).unwrap();
     dbg!(
         respack
-            .get("hello_world.txt")
+            .get("test/hello_world.txt")
             .map(|bytes| str::from_utf8(bytes).unwrap())
     );
 }
