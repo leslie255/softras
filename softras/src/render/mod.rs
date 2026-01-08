@@ -1,6 +1,6 @@
 use std::f32;
 
-use bytemuck::Zeroable as _;
+use bytemuck::Zeroable;
 use glam::*;
 
 mod color;
@@ -17,6 +17,9 @@ pub struct Canvas {
     width: u32,
     height: u32,
     frame_buffer: Vec<RgbaU8>,
+    albedo_buffer: Vec<Rgba>,
+    position_buffer: Vec<Vec3>,
+    normal_buffer: Vec<Vec3>,
     depth_buffer: Vec<f32>,
 }
 
@@ -32,6 +35,9 @@ impl Canvas {
             width: 0,
             height: 0,
             frame_buffer: Vec::new(),
+            albedo_buffer: Vec::new(),
+            position_buffer: Vec::new(),
+            normal_buffer: Vec::new(),
             depth_buffer: Vec::new(),
         }
     }
@@ -58,14 +64,20 @@ impl Canvas {
 
     pub fn clear(&mut self, clear_color: RgbaU8) {
         self.frame_buffer.fill(clear_color);
+        self.albedo_buffer.fill(Rgba::zeroed());
+        self.position_buffer.fill(Vec3::zeroed());
+        self.normal_buffer.fill(Vec3::zeroed());
         self.depth_buffer.fill(1.0f32);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.frame_buffer.resize(self.n_pixels(), RgbaU8::zeroed());
-        self.depth_buffer.resize(self.n_pixels(), f32::zeroed());
+        self.frame_buffer.resize(self.n_pixels(), Zeroable::zeroed());
+        self.albedo_buffer.resize(self.n_pixels(), Zeroable::zeroed());
+        self.position_buffer.resize(self.n_pixels(), Zeroable::zeroed());
+        self.normal_buffer.resize(self.n_pixels(), Zeroable::zeroed());
+        self.depth_buffer.resize(self.n_pixels(), Zeroable::zeroed());
     }
 
     pub fn n_pixels(&self) -> usize {
@@ -73,8 +85,33 @@ impl Canvas {
     }
 }
 
+pub fn postprocess<S: PostprocessShader + ?Sized>(canvas: &mut Canvas, shader: &S) {
+    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
+
+    for x_pixel in 0..canvas.width {
+        for y_pixel in 0..canvas.height {
+            let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
+            let result = unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) };
+            let albedo = unsafe { *canvas.albedo_buffer.get_unchecked_mut(i_pixel) };
+            let position = unsafe { *canvas.position_buffer.get_unchecked_mut(i_pixel) };
+            let normal = unsafe { *canvas.normal_buffer.get_unchecked_mut(i_pixel) };
+            let depth = unsafe { *canvas.depth_buffer.get_unchecked_mut(i_pixel) };
+            let shader_input = PostprocessInput {
+                albedo,
+                position,
+                depth,
+                normal,
+            };
+            *result = shader.postprocess(shader_input).into();
+        }
+    }
+}
+
 /// Draws a triangle to a canvas.
-pub fn draw_triangle<S: Shader + ?Sized>(
+pub fn draw_triangle<S: FragmentShader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
@@ -109,7 +146,7 @@ pub fn draw_triangle<S: Shader + ?Sized>(
 
 // Clip Case 1: One point is behind the near plane, the other two points are in front.
 #[cold]
-fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
+fn clip_case_1<S: FragmentShader + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
@@ -131,7 +168,7 @@ fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
 #[cold]
 #[inline(never)]
-fn clip_case_2<S: Shader + ?Sized, const I_FRONT: usize>(
+fn clip_case_2<S: FragmentShader + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
@@ -159,7 +196,7 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 }
 
 /// Handle the rendering from after clipping (but before perspective division).
-fn after_near_clipping<S: Shader + ?Sized>(
+fn after_near_clipping<S: FragmentShader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices_clip: [Vertex<Vec4>; 3],
@@ -205,12 +242,24 @@ fn after_near_clipping<S: Shader + ?Sized>(
         ]
     };
     let bounds_area = (x_max - x_min) * (y_max - y_min);
-    let chunk_size = 64u32;
-    if bounds_area < chunk_size.pow(2) {
-        // No chunking case.
+    let chunk_size = 32u32;
+    if chunk_size.pow(2) < bounds_area {
+        // Chunking case.
         // (Chunking is basically only an optimization measure for dealing with triangles that
         // occupy big screen spaces, so if you are checking out the code base just to understand
-        // the workings of rasterization process, simply assume this path).
+        // the workings of rasterization process, simply assume the other no chunking path).
+        rasterize_chunked(
+            canvas,
+            vertices_clip,
+            shader,
+            bounds,
+            positions_ndc,
+            depths,
+            normals,
+            chunk_size,
+        );
+    } else {
+        // No chunking case.
         rasterize(
             canvas,
             vertices_clip,
@@ -220,38 +269,49 @@ fn after_near_clipping<S: Shader + ?Sized>(
             depths,
             normals,
         );
-    } else {
-        // Chunking case.
-        let positions_pixel = positions_ndc.map(|p_ndc| {
-            vec2(
-                ndc_to_pixel_x(p_ndc.x, canvas.width),
-                ndc_to_pixel_y(p_ndc.y, canvas.height),
-            )
-        });
-        for y_min in step_range(y_min, (y_max + 1).next_multiple_of(chunk_size), chunk_size) {
-            for x_min in step_range(x_min, (x_max + 1).next_multiple_of(chunk_size), chunk_size) {
-                let x_max = (x_min + chunk_size).min(canvas.width - 1);
-                let y_max = (y_min + chunk_size).min(canvas.height - 1);
-                if rect_triangle_overlap(
-                    positions_pixel,
-                    [x_min, x_max, y_min, y_max].map(|u| u as f32),
-                ) {
-                    rasterize(
-                        canvas,
-                        vertices_clip,
-                        shader,
-                        [x_min, x_max, y_min, y_max],
-                        positions_ndc,
-                        depths,
-                        normals,
-                    );
-                }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rasterize_chunked<S: FragmentShader + ?Sized>(
+    canvas: &mut Canvas,
+    vertices_clip: [Vertex<Vec4>; 3],
+    shader: &S,
+    [x_min, x_max, y_min, y_max]: [u32; 4],
+    positions_ndc: [Vec2; 3],
+    depths: [f32; 3],
+    normals: [Vec3; 3],
+    chunk_size: u32,
+) {
+    let positions_pixel = positions_ndc.map(|p_ndc| {
+        vec2(
+            ndc_to_pixel_x(p_ndc.x, canvas.width),
+            ndc_to_pixel_y(p_ndc.y, canvas.height),
+        )
+    });
+    for y_min in step_range(y_min, (y_max + 1).next_multiple_of(chunk_size), chunk_size) {
+        for x_min in step_range(x_min, (x_max + 1).next_multiple_of(chunk_size), chunk_size) {
+            let x_max = (x_min + chunk_size).min(canvas.width - 1);
+            let y_max = (y_min + chunk_size).min(canvas.height - 1);
+            if rect_triangle_overlap(
+                positions_pixel,
+                [x_min, x_max, y_min, y_max].map(|u| u as f32),
+            ) {
+                rasterize(
+                    canvas,
+                    vertices_clip,
+                    shader,
+                    [x_min, x_max, y_min, y_max],
+                    positions_ndc,
+                    depths,
+                    normals,
+                );
             }
         }
     }
 }
 
-fn rasterize<S: Shader + ?Sized>(
+fn rasterize<S: FragmentShader + ?Sized>(
     canvas: &mut Canvas,
     vertices_clip: [Vertex<Vec4>; 3],
     shader: &S,
@@ -260,34 +320,39 @@ fn rasterize<S: Shader + ?Sized>(
     depths: [f32; 3],
     normals: [Vec3; 3],
 ) {
-    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
 
     for x_pixel in x_min..=x_max {
         for y_pixel in y_min..=y_max {
             let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
+            let albedo_sample = unsafe { canvas.albedo_buffer.get_unchecked_mut(i_pixel) };
+            let position_sample = unsafe { canvas.position_buffer.get_unchecked_mut(i_pixel) };
+            let normal_sample = unsafe { canvas.normal_buffer.get_unchecked_mut(i_pixel) };
             let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
-            let pixel_sample = unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) };
             let p_ndc = vec2(
                 pixel_to_ndc_x(x_pixel, canvas.width),
                 pixel_to_ndc_y(y_pixel, canvas.height),
             );
-            let Some(weights) = triangle_weights(positions_ndc, p_ndc) else {
+            let Some(weights) = barycentric_weights_inside(positions_ndc, p_ndc) else {
                 continue;
             };
             let depth = triangular_interpolate(weights, depths);
             if *depth_sample <= depth {
                 continue;
             }
-            *depth_sample = depth;
-            let fragment_input = FragmentInput {
+            let shader_input = FragmentInput {
                 position: vec3(p_ndc.x, p_ndc.y, depth),
                 depth,
                 uv: triangular_interpolate_vec2(weights, vertices_clip.map(|v| v.uv)),
                 normal: triangular_interpolate_vec3(weights, normals),
             };
-            let fragment_result = shader.fragment(fragment_input);
-            *pixel_sample = RgbaU8::from(fragment_result);
+            let fragment_result = shader.fragment(shader_input);
+            *albedo_sample = fragment_result;
+            *position_sample = shader_input.position;
+            *normal_sample = shader_input.normal;
+            *depth_sample = depth;
         }
     }
 }
@@ -299,10 +364,10 @@ fn rect_triangle_overlap(
     if point_inside_rect(p0, rect) || point_inside_rect(p1, rect) || point_inside_rect(p2, rect) {
         return true;
     }
-    if point_inside_triangle(vec2(x_min, y_min), triangle)
-        || point_inside_triangle(vec2(x_min, y_max), triangle)
-        || point_inside_triangle(vec2(x_max, y_min), triangle)
-        || point_inside_triangle(vec2(x_max, y_max), triangle)
+    if point_in_triangle(triangle, vec2(x_min, y_min))
+        || point_in_triangle(triangle, vec2(x_min, y_max))
+        || point_in_triangle(triangle, vec2(x_max, y_min))
+        || point_in_triangle(triangle, vec2(x_max, y_max))
     {
         return true;
     }
@@ -311,15 +376,12 @@ fn rect_triangle_overlap(
         || line_rect_intersects(p2, p0, rect)
 }
 
-fn point_inside_triangle(p: Vec2, triangle: [Vec2; 3]) -> bool {
-    triangle_weights(triangle, p).is_some()
-}
-
 fn point_inside_rect(p: Vec2, [x_min, x_max, y_min, y_max]: [f32; 4]) -> bool {
     (x_min..=x_max).contains(&p.x) || (y_min..=y_max).contains(&p.y)
 }
 
 fn line_rect_intersects(p0: Vec2, p1: Vec2, [x_min, x_max, y_min, y_max]: [f32; 4]) -> bool {
+    // Liang-Barsky algorithm.
     let x0 = p0.x;
     let y0 = p0.y;
     let dx = p1.x - p0.x;
@@ -353,6 +415,10 @@ fn line_rect_intersects(p0: Vec2, p1: Vec2, [x_min, x_max, y_min, y_max]: [f32; 
         }
     }
     u1 <= u2 && u2 >= 0. && u1 <= 1.
+}
+
+fn point_in_triangle([a, b, c]: [Vec2; 3], p: Vec2) -> bool {
+    barycentric_weights_inside([a, b, c], p).is_some()
 }
 
 fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
@@ -403,9 +469,7 @@ fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
     signed_area(a, b, c) >= 0.
 }
 
-/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
-/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
-fn triangle_weights([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
+fn barycentric_weights([a, b, c]: [Vec2; 3], p: Vec2) -> [f32; 3] {
     fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
         0.5 * (c - a).dot((b - a).perp())
     }
@@ -413,16 +477,20 @@ fn triangle_weights([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
     let area_total = area_bcp + area_cap + area_abp;
-    if (area_bcp > 0.) == (area_cap > 0.) && (area_cap > 0.) == (area_abp > 0.) {
-        // Inside.
-        let inv_area_total = 1. / area_total;
-        Some([
-            inv_area_total * area_bcp, // weight of A
-            inv_area_total * area_cap, // weight of B
-            inv_area_total * area_abp, // weight of C
-        ])
+    [
+        (1. / area_total) * area_bcp,
+        (1. / area_total) * area_cap,
+        (1. / area_total) * area_abp,
+    ]
+}
+
+/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
+/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
+fn barycentric_weights_inside([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
+    let weights @ [w_a, w_b, w_c] = barycentric_weights([a, b, c], p);
+    if (w_a > 0.) == (w_b > 0.) && (w_b > 0.) == (w_c > 0.) {
+        Some(weights)
     } else {
-        // Outside.
         None
     }
 }
@@ -541,32 +609,92 @@ impl IntoVertex for obj::TexturedVertex {
     }
 }
 
+impl<T: Into<Vertex> + Copy> IntoVertex for T {
+    fn into_vertex(selfs: [Self; 3]) -> [Vertex; 3] {
+        selfs.map(Into::into)
+    }
+}
+
 #[allow(dead_code)]
-pub fn draw_object<S: Shader + ?Sized, V: IntoVertex>(
+pub fn draw_vertices<S: FragmentShader + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
     shader: &S,
-    object: &Obj<V>,
+    vertices: &[V],
 ) {
-    for indices in object.indices.iter().copied().array_chunks::<3>() {
-        let vertices_raw = indices.map(|i| object.vertices[i as usize]);
+    for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
         draw_triangle(canvas, model_view, projection, shader, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_object_unchecked<S: Shader + ?Sized, V: IntoVertex>(
+pub fn draw_vertices_indexed<S: FragmentShader + ?Sized, V: IntoVertex>(
+    canvas: &mut Canvas,
+    model_view: Mat4,
+    projection: Mat4,
+    shader: &S,
+    vertices: &[V],
+    indices: &[u16],
+) {
+    for indices in indices.iter().copied().array_chunks::<3>() {
+        let vertices_raw = indices.map(|i| vertices[i as usize]);
+        let vertices = V::into_vertex(vertices_raw);
+        draw_triangle(canvas, model_view, projection, shader, vertices);
+    }
+}
+
+#[allow(dead_code)]
+pub unsafe fn draw_vertices_indexed_unchecked<S: FragmentShader + ?Sized, V: IntoVertex>(
+    canvas: &mut Canvas,
+    model_view: Mat4,
+    projection: Mat4,
+    shader: &S,
+    vertices: &[V],
+    indices: &[u16],
+) {
+    for indices in indices.iter().copied().array_chunks::<3>() {
+        let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i as usize) });
+        let vertices = V::into_vertex(vertices_raw);
+        draw_triangle(canvas, model_view, projection, shader, vertices);
+    }
+}
+
+#[allow(dead_code)]
+pub fn draw_object<S: FragmentShader + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
     shader: &S,
     object: &Obj<V>,
 ) {
-    for indices in object.indices.iter().copied().array_chunks::<3>() {
-        let vertices_raw = indices.map(|i| unsafe { *object.vertices.get_unchecked(i as usize) });
-        let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, shader, vertices);
+    draw_vertices_indexed(
+        canvas,
+        model_view,
+        projection,
+        shader,
+        &object.vertices,
+        &object.indices,
+    );
+}
+
+#[allow(dead_code)]
+pub unsafe fn draw_object_unchecked<S: FragmentShader + ?Sized, V: IntoVertex>(
+    canvas: &mut Canvas,
+    model_view: Mat4,
+    projection: Mat4,
+    shader: &S,
+    object: &Obj<V>,
+) {
+    unsafe {
+        draw_vertices_indexed_unchecked(
+            canvas,
+            model_view,
+            projection,
+            shader,
+            &object.vertices,
+            &object.indices,
+        );
     }
 }

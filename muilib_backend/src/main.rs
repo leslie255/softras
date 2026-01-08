@@ -32,9 +32,6 @@ enum ProgramSubcommand {
 
 #[derive(Debug, Clone, clap::Parser)]
 struct SubcommandRunArgs {
-    /// Path of the respack file.
-    #[clap(short = 'r', long = "respack", default_value_t = String::from("resources.respack.bin"))]
-    respack: String,
     /// Preferred display width.
     #[clap(short = 'W', long = "display-width", default_value_t = 800)]
     display_width: u32,
@@ -43,7 +40,7 @@ struct SubcommandRunArgs {
     display_height: u32,
     /// The game's respack file.
     #[clap(short = 'r', long = "res", default_value_t = String::from("resources.respack.bin"))]
-    res: String,
+    respack: String,
     /// Muilib's resource directory.
     #[clap(short = 'R', long = "muilib-res", default_value_t = String::from("muilib_res"))]
     muilib_res: String,
@@ -103,8 +100,8 @@ fn subcommand_run(args: SubcommandRunArgs) {
         }
     }
     let muilib_resources = muilib::AppResources::new(PathBuf::from_str(&args.muilib_res).unwrap());
-    let respack_bytes: Vec<u8> = fs::read(&args.res).unwrap_or_else(|error| {
-        log::error!("unable to open file {:?}, error: {error}", &args.res);
+    let respack_bytes: Vec<u8> = fs::read(&args.respack).unwrap_or_else(|error| {
+        log::error!("unable to open file {:?}, error: {error}", &args.respack);
         exit(1);
     });
     let event_loop = EventLoop::builder().build().unwrap();

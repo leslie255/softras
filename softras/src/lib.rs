@@ -279,13 +279,13 @@ impl Game {
     ];
 
     #[rustfmt::skip]
-    const CUBE_INDICIES: [[u16; 3]; 12] = [
-        /* South */ [0, 1, 2], [2, 3, 0],
-        /* North */ [4, 5, 6], [6, 7, 4],
-        /* East  */ [8, 9, 10], [10, 11, 8],
-        /* West  */ [12, 13, 14], [14, 15, 12],
-        /* Up    */ [16, 17, 18], [18, 19, 16],
-        /* Down  */ [20, 21, 22], [22, 23, 20],
+    const CUBE_INDICIES: [u16; 36] = [
+        /* South */ 0, 1, 2, 2, 3, 0,
+        /* North */ 4, 5, 6, 6, 7, 4,
+        /* East  */ 8, 9, 10, 10, 11, 8,
+        /* West  */ 12, 13, 14, 14, 15, 12,
+        /* Up    */ 16, 17, 18, 18, 19, 16,
+        /* Down  */ 20, 21, 22, 22, 23, 20,
     ];
 
     fn key_is_down(&self, key_code: KeyCode) -> bool {
@@ -386,16 +386,10 @@ impl Game {
         let projection = self
             .camera
             .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
-        let light_direction = view.transform_vector3(vec3(-1., -1., -1.)).normalize();
 
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let shader = DirectionalShadingShader {
-                    color,
-                    light_direction,
-                    shading_intensity: 1.4,
-                    highlightness: 0.7,
-                };
+                let shader = BasicShader { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -415,12 +409,7 @@ impl Game {
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let shader = DirectionalShadingShader {
-                    color,
-                    light_direction,
-                    shading_intensity: 1.3,
-                    highlightness: 0.7,
-                };
+                let shader = BasicShader { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -437,54 +426,57 @@ impl Game {
         draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
 
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-            let shader = DirectionalShadingShader {
-                color,
-                light_direction,
-                shading_intensity: 1.,
-                ..Default::default()
-            };
+            let shader = BasicShader { fill_color: color };
             let model = Mat4::from_translation(position)
                 * Mat4::from_scale(vec3(scale, scale, scale))
                 * Mat4::from_rotation_y(rotation_degrees.to_degrees());
-            for indices in Self::CUBE_INDICIES {
-                let vertices = indices.map(|i| Self::CUBE_VERTICES[i as usize]);
-                draw_triangle(
-                    &mut self.canvas,
-                    view * model,
-                    projection,
-                    &shader,
-                    vertices,
-                );
-            }
-        };
-        draw_cube(1., vec3(6., 0., 2.), 30., Rgb::from_hex(0x008080));
-        draw_cube(1.5, vec3(0., 0., 6.), 45., Rgb::from_hex(0x800080));
-
-        #[rustfmt::skip]
-        let ground_vertices = [
-            Vertex::new([1., 0., 0.], [0., 1.], [0., 1., 0.]),
-            Vertex::new([0., 0., 0.], [1., 1.], [0., 1., 0.]),
-            Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
-            Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
-        ];
-        let ground_indices = [[0u16, 1, 2], [2, 3, 0]];
-        let shader = DirectionalShadingShader {
-            color: Rgb::from_hex(0x101820),
-            light_direction: vec3(-1., -1., -1.).normalize(),
-            ..Default::default()
-        };
-        let ground_size = 100.0f32;
-        let model = Mat4::from_translation(0.5 * vec3(-ground_size, 0., -ground_size))
-            * Mat4::from_scale(vec3(ground_size, 0., ground_size));
-        for indices in ground_indices {
-            draw_triangle(
+            draw_vertices_indexed(
                 &mut self.canvas,
                 view * model,
                 projection,
                 &shader,
-                indices.map(|i| ground_vertices[i as usize]),
+                &Self::CUBE_VERTICES,
+                &Self::CUBE_INDICIES,
             );
+        };
+        draw_cube(1., vec3(6., 0., 2.), 30., Rgb::from_hex(0x008080));
+        draw_cube(1.5, vec3(0., 0., 6.), 45., Rgb::from_hex(0x800080));
+
+        // Draw ground.
+        {
+            #[rustfmt::skip]
+            let ground_vertices = [
+                Vertex::new([1., 0., 0.], [0., 1.], [0., 1., 0.]),
+                Vertex::new([0., 0., 0.], [1., 1.], [0., 1., 0.]),
+                Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
+                Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
+            ];
+            let ground_indices = [0u16, 1, 2, 2, 3, 0];
+            let shader = BasicShader {
+                fill_color: Rgb::from_hex(0x101820),
+            };
+            let size = 100.0f32;
+            let height = 0.1f32;
+            let model = Mat4::from_translation(0.5 * vec3(-size, -height, -size))
+                * Mat4::from_scale(vec3(size, height, size));
+            unsafe {
+                draw_vertices_indexed_unchecked(
+                    &mut self.canvas,
+                    view * model,
+                    projection,
+                    &shader,
+                    &ground_vertices,
+                    &ground_indices,
+                );
+            }
         }
+
+        let postprocess_shader = DirectionalShadingPostprocessor {
+            light_direction: view.transform_vector3(vec3(-1., -1., -1.)).normalize(),
+            shading_intensity: 1.2,
+            ..Default::default()
+        };
+        postprocess(&mut self.canvas, &postprocess_shader);
     }
 
     fn move_player(&mut self, frame_duration: Duration) {
