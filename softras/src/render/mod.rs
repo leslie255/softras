@@ -10,6 +10,8 @@ pub use color::*;
 use obj::Obj;
 pub use shader::*;
 
+use crate::*;
+
 #[derive(Clone)]
 pub struct Canvas {
     width: u32,
@@ -107,7 +109,6 @@ pub fn draw_triangle<S: Shader + ?Sized>(
 
 // Clip Case 1: One point is behind the near plane, the other two points are in front.
 #[cold]
-#[inline(never)]
 fn clip_case_1<S: Shader + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
@@ -158,43 +159,37 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 }
 
 /// Handle the rendering from after clipping (but before perspective division).
-#[inline(always)]
 fn after_near_clipping<S: Shader + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices_clip: [Vertex<Vec4>; 3],
     shader: &S,
 ) {
-    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
-    debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
-
-    // Perspective division.
+    // === Perspective Division ===
 
     let vertices_ndc: [Vertex; 3] = vertices_clip.map(|vertex| {
         let position = vertex.position.xyz() / vertex.position.w;
         vertex.with_position(position)
     });
+    // Convenience declarations.
     let positions_ndc: [Vec2; 3] = vertices_ndc.map(|vertex| vertex.position.xy());
     let depths: [f32; 3] = vertices_ndc.map(|vertex| vertex.position.z);
+
+    if !is_clockwise_winding(positions_ndc) {
+        return;
+    }
+
     let normal_transform = model_view.inverse().transpose();
     let normals: [Vec3; 3] = [
         vertices_clip[0].position.w * normal_transform.transform_vector3(vertices_clip[0].normal),
         vertices_clip[1].position.w * normal_transform.transform_vector3(vertices_clip[1].normal),
         vertices_clip[2].position.w * normal_transform.transform_vector3(vertices_clip[2].normal),
     ];
-    // let normals: [Vec3; 3] = [
-    //     vertices_clip[0].position.w * vertices_clip[0].normal,
-    //     vertices_clip[1].position.w * vertices_clip[1].normal,
-    //     vertices_clip[2].position.w * vertices_clip[2].normal,
-    // ];
-    if !is_clockwise_winding(positions_ndc) {
-        return;
-    }
 
-    // Rasterization.
+    // === Rasterization ===
 
     // Bounding box of pixels that we need to sample.
-    let [x_min, x_max, y_min, y_max]: [u32; 4] = {
+    let bounds @ [x_min, x_max, y_min, y_max]: [u32; 4] = {
         let [p0, p1, p2] = positions_ndc;
         let min_ndc = p0.min(p1).min(p2);
         let max_ndc = p0.max(p1).max(p2);
@@ -209,6 +204,65 @@ fn after_near_clipping<S: Shader + ?Sized>(
             (ndc_to_pixel_y(min_ndc.y, height).ceil().max(0.) as u32).min(height - 1),
         ]
     };
+    let bounds_area = (x_max - x_min) * (y_max - y_min);
+    let chunk_size = 64u32;
+    if bounds_area < chunk_size.pow(2) {
+        // No chunking case.
+        // (Chunking is basically only an optimization measure for dealing with triangles that
+        // occupy big screen spaces, so if you are checking out the code base just to understand
+        // the workings of rasterization process, simply assume this path).
+        rasterize(
+            canvas,
+            vertices_clip,
+            shader,
+            bounds,
+            positions_ndc,
+            depths,
+            normals,
+        );
+    } else {
+        // Chunking case.
+        let positions_pixel = positions_ndc.map(|p_ndc| {
+            vec2(
+                ndc_to_pixel_x(p_ndc.x, canvas.width),
+                ndc_to_pixel_y(p_ndc.y, canvas.height),
+            )
+        });
+        for y_min in step_range(y_min, (y_max + 1).next_multiple_of(chunk_size), chunk_size) {
+            for x_min in step_range(x_min, (x_max + 1).next_multiple_of(chunk_size), chunk_size) {
+                let x_max = (x_min + chunk_size).min(canvas.width - 1);
+                let y_max = (y_min + chunk_size).min(canvas.height - 1);
+                if rect_triangle_overlap(
+                    positions_pixel,
+                    [x_min, x_max, y_min, y_max].map(|u| u as f32),
+                ) {
+                    rasterize(
+                        canvas,
+                        vertices_clip,
+                        shader,
+                        [x_min, x_max, y_min, y_max],
+                        positions_ndc,
+                        depths,
+                        normals,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn rasterize<S: Shader + ?Sized>(
+    canvas: &mut Canvas,
+    vertices_clip: [Vertex<Vec4>; 3],
+    shader: &S,
+    [x_min, x_max, y_min, y_max]: [u32; 4],
+    positions_ndc: [Vec2; 3],
+    depths: [f32; 3],
+    normals: [Vec3; 3],
+) {
+    debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
+
     for x_pixel in x_min..=x_max {
         for y_pixel in y_min..=y_max {
             let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
@@ -236,6 +290,69 @@ fn after_near_clipping<S: Shader + ?Sized>(
             *pixel_sample = RgbaU8::from(fragment_result);
         }
     }
+}
+
+fn rect_triangle_overlap(
+    triangle @ [p0, p1, p2]: [Vec2; 3],
+    rect @ [x_min, x_max, y_min, y_max]: [f32; 4],
+) -> bool {
+    if point_inside_rect(p0, rect) || point_inside_rect(p1, rect) || point_inside_rect(p2, rect) {
+        return true;
+    }
+    if point_inside_triangle(vec2(x_min, y_min), triangle)
+        || point_inside_triangle(vec2(x_min, y_max), triangle)
+        || point_inside_triangle(vec2(x_max, y_min), triangle)
+        || point_inside_triangle(vec2(x_max, y_max), triangle)
+    {
+        return true;
+    }
+    line_rect_intersects(p0, p1, rect)
+        || line_rect_intersects(p1, p2, rect)
+        || line_rect_intersects(p2, p0, rect)
+}
+
+fn point_inside_triangle(p: Vec2, triangle: [Vec2; 3]) -> bool {
+    triangle_weights(triangle, p).is_some()
+}
+
+fn point_inside_rect(p: Vec2, [x_min, x_max, y_min, y_max]: [f32; 4]) -> bool {
+    (x_min..=x_max).contains(&p.x) || (y_min..=y_max).contains(&p.y)
+}
+
+fn line_rect_intersects(p0: Vec2, p1: Vec2, [x_min, x_max, y_min, y_max]: [f32; 4]) -> bool {
+    let x0 = p0.x;
+    let y0 = p0.y;
+    let dx = p1.x - p0.x;
+    let dy = p1.y - p0.y;
+    let p = [
+        -dx, // p1
+        dx,  // p2
+        -dy, // p3
+        dy,  // p4
+    ];
+    let q = [
+        x0 - x_min, // q1
+        x_max - x0, // q2
+        y0 - y_min, // q3
+        y_max - y0, // q4
+    ];
+    let mut u1 = 0.0f32;
+    let mut u2 = 1.0f32;
+    for i in 0..4 {
+        if p[i].abs() < 0.001 {
+            if q[i] < 0. {
+                return false;
+            }
+        } else {
+            let t = q[i] / p[i];
+            if p[i] < 0. {
+                u1 = u1.max(t);
+            } else if p[i] > 0. {
+                u2 = u2.min(t);
+            }
+        }
+    }
+    u1 <= u2 && u2 >= 0. && u1 <= 1.
 }
 
 fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
@@ -433,7 +550,8 @@ pub fn draw_object<S: Shader + ?Sized, V: IntoVertex>(
     object: &Obj<V>,
 ) {
     for indices in object.indices.iter().copied().array_chunks::<3>() {
-        let vertices = V::into_vertex(indices.map(|i| object.vertices[i as usize]));
+        let vertices_raw = indices.map(|i| object.vertices[i as usize]);
+        let vertices = V::into_vertex(vertices_raw);
         draw_triangle(canvas, model_view, projection, shader, vertices);
     }
 }
@@ -447,8 +565,8 @@ pub unsafe fn draw_object_unchecked<S: Shader + ?Sized, V: IntoVertex>(
     object: &Obj<V>,
 ) {
     for indices in object.indices.iter().copied().array_chunks::<3>() {
-        let vertices =
-            V::into_vertex(indices.map(|i| unsafe { *object.vertices.get_unchecked(i as usize) }));
+        let vertices_raw = indices.map(|i| unsafe { *object.vertices.get_unchecked(i as usize) });
+        let vertices = V::into_vertex(vertices_raw);
         draw_triangle(canvas, model_view, projection, shader, vertices);
     }
 }

@@ -1,4 +1,4 @@
-#![feature(iter_array_chunks, read_array, normalize_lexically)] // FIXME: use of unstable features
+#![feature(iter_array_chunks, read_array)] // FIXME: use of unstable features
 
 use std::{
     fmt::Write as _,
@@ -13,11 +13,17 @@ use glam::*;
 mod key_code;
 mod render;
 mod respack;
+mod utils;
 
 pub use key_code::*;
 use obj::Obj;
 use render::*;
 use respack::*;
+use utils::*;
+
+fn display_path<'a>(x: &'a (impl AsRef<Path> + 'a + ?Sized)) -> impl std::fmt::Display + 'a {
+    x.as_ref().display()
+}
 
 /// Packs the needed resources from the directory located in `softras/res` into a one respack file.
 ///
@@ -27,6 +33,7 @@ use respack::*;
 /// * `output` - the output file (e.g. `"resources.respack.bin"`)
 pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceError> {
     fn pack(res_packer: &mut ResourcePacker, path: &str) -> Result<(), PackResourceError> {
+        log::info!("packing resource {} ...", display_path(path));
         res_packer
             .append_file(path)
             .map_err(|error| PackResourceError::MissingResource {
@@ -49,6 +56,8 @@ pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceErr
             path: PathBuf::from(output),
             error,
         })?;
+
+    log::info!("finished packing",);
 
     Ok(())
 }
@@ -159,7 +168,7 @@ impl Game {
         }
         self.previous_frame_instant = Some(before_frame);
 
-        self.draw();
+        self.draw_scene();
 
         let after_frame = Instant::now();
         let frame_time = (after_frame - before_frame).as_secs_f64();
@@ -367,7 +376,7 @@ impl Game {
         );
     }
 
-    fn draw(&mut self) {
+    fn draw_scene(&mut self) {
         if self.canvas.width() == 0 || self.canvas.height() == 0 {
             return;
         }
