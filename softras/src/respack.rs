@@ -166,8 +166,8 @@ impl ResourcePacker {
     }
 
     pub fn append_file(&mut self, subpath: &str) -> io::Result<()> {
-        let subpath = Utf8UnixPath::new(subpath);
-        let path = self.root_path.join(subpath);
+        let subpath = Utf8UnixPath::new(subpath).normalize();
+        let path = self.root_path.join(&subpath);
         let bytes: Vec<u8> = if cfg!(unix) {
             fs::read(path.as_str())?
         } else if cfg!(windows) {

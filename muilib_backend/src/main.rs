@@ -8,7 +8,7 @@ use muilib::{
     cgmath::*,
     winit::{
         application::ApplicationHandler,
-        dpi::PhysicalSize,
+        dpi::LogicalSize,
         event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent},
         event_loop::{ActiveEventLoop, EventLoop},
         keyboard::PhysicalKey,
@@ -139,10 +139,7 @@ impl<'cx>
                 .create_window(
                     Window::default_attributes()
                         .with_title("Software Rasterizer")
-                        .with_inner_size(PhysicalSize::new(
-                            args.display_width,
-                            args.display_height,
-                        )),
+                        .with_inner_size(LogicalSize::new(args.display_width, args.display_height)),
                 )
                 .unwrap(),
         );
