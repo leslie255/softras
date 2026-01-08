@@ -85,7 +85,7 @@ impl Canvas {
     }
 }
 
-pub fn postprocess<S: PostprocessShader + ?Sized>(canvas: &mut Canvas, shader: &S) {
+pub fn postprocess<P: Postprocessor + ?Sized>(canvas: &mut Canvas, postprocessor: &P) {
     debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
@@ -99,23 +99,23 @@ pub fn postprocess<S: PostprocessShader + ?Sized>(canvas: &mut Canvas, shader: &
             let position = unsafe { *canvas.position_buffer.get_unchecked_mut(i_pixel) };
             let normal = unsafe { *canvas.normal_buffer.get_unchecked_mut(i_pixel) };
             let depth = unsafe { *canvas.depth_buffer.get_unchecked_mut(i_pixel) };
-            let shader_input = PostprocessInput {
+            let material_input = PostprocessInput {
                 albedo,
                 position,
                 depth,
                 normal,
             };
-            *result = shader.postprocess(shader_input).into();
+            *result = postprocessor.postprocess(material_input).into();
         }
     }
 }
 
 /// Draws a triangle to a canvas.
-pub fn draw_triangle<S: FragmentShader + ?Sized>(
+pub fn draw_triangle<S: Material + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &S,
     vertices: [Vertex; 3],
 ) {
     let mvp = projection * model_view;
@@ -127,30 +127,30 @@ pub fn draw_triangle<S: FragmentShader + ?Sized>(
     #[rustfmt::skip]
     match vertices_clip.map(|vertex| vertex.position.z >= 0.) {
         // All points are in front of near plane, no near plane clipping needed.
-        [true, true, true] => after_near_clipping(canvas, model_view, vertices_clip, shader),
+        [true, true, true] => after_near_clipping(canvas, model_view, vertices_clip, material),
 
         // All points are behind near plane.
         [false, false, false] => (),
 
         // Clip Case 1: One point is behind the near plane, the other two points are in front.
-        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, vertices_clip, shader),
-        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, vertices_clip, shader),
-        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, vertices_clip, shader),
+        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, vertices_clip, material),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, vertices_clip, material),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, vertices_clip, material),
 
         // Clip Case 2: Two points are behind the near plane, the other point is in front.
-        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, vertices_clip, shader),
-        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, vertices_clip, shader),
-        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, vertices_clip, shader),
+        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, vertices_clip, material),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, vertices_clip, material),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, vertices_clip, material),
     };
 }
 
 // Clip Case 1: One point is behind the near plane, the other two points are in front.
 #[cold]
-fn clip_case_1<S: FragmentShader + ?Sized, const I_BACK: usize>(
+fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
-    shader: &S,
+    material: &S,
 ) {
     const { assert!(I_BACK < 3) };
     let [v0, v1, v2] = vertices;
@@ -161,18 +161,18 @@ fn clip_case_1<S: FragmentShader + ?Sized, const I_BACK: usize>(
         2 => [[v0_vb, v0, v1], [v0_vb, v1, v1_vb]],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, result_vertices[0], shader);
-    after_near_clipping(canvas, model_view, result_vertices[1], shader);
+    after_near_clipping(canvas, model_view, result_vertices[0], material);
+    after_near_clipping(canvas, model_view, result_vertices[1], material);
 }
 
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
 #[cold]
 #[inline(never)]
-fn clip_case_2<S: FragmentShader + ?Sized, const I_FRONT: usize>(
+fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
-    shader: &S,
+    material: &S,
 ) {
     const { assert!(I_FRONT < 3) };
     let [v0, v1, v2] = vertices;
@@ -183,7 +183,7 @@ fn clip_case_2<S: FragmentShader + ?Sized, const I_FRONT: usize>(
         2 => [v0_vf, v1_vf, v2],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, positions, shader);
+    after_near_clipping(canvas, model_view, positions, material);
 }
 
 fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Vertex<Vec4> {
@@ -196,11 +196,11 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 }
 
 /// Handle the rendering from after clipping (but before perspective division).
-fn after_near_clipping<S: FragmentShader + ?Sized>(
+fn after_near_clipping<S: Material + ?Sized>(
     canvas: &mut Canvas,
     model_view: Mat4,
     vertices_clip: [Vertex<Vec4>; 3],
-    shader: &S,
+    material: &S,
 ) {
     // === Perspective Division ===
 
@@ -251,7 +251,7 @@ fn after_near_clipping<S: FragmentShader + ?Sized>(
         rasterize_chunked(
             canvas,
             vertices_clip,
-            shader,
+            material,
             bounds,
             positions_ndc,
             depths,
@@ -263,7 +263,7 @@ fn after_near_clipping<S: FragmentShader + ?Sized>(
         rasterize(
             canvas,
             vertices_clip,
-            shader,
+            material,
             bounds,
             positions_ndc,
             depths,
@@ -273,10 +273,10 @@ fn after_near_clipping<S: FragmentShader + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rasterize_chunked<S: FragmentShader + ?Sized>(
+fn rasterize_chunked<S: Material + ?Sized>(
     canvas: &mut Canvas,
     vertices_clip: [Vertex<Vec4>; 3],
-    shader: &S,
+    material: &S,
     [x_min, x_max, y_min, y_max]: [u32; 4],
     positions_ndc: [Vec2; 3],
     depths: [f32; 3],
@@ -300,7 +300,7 @@ fn rasterize_chunked<S: FragmentShader + ?Sized>(
                 rasterize(
                     canvas,
                     vertices_clip,
-                    shader,
+                    material,
                     [x_min, x_max, y_min, y_max],
                     positions_ndc,
                     depths,
@@ -311,10 +311,10 @@ fn rasterize_chunked<S: FragmentShader + ?Sized>(
     }
 }
 
-fn rasterize<S: FragmentShader + ?Sized>(
+fn rasterize<M: Material + ?Sized>(
     canvas: &mut Canvas,
     vertices_clip: [Vertex<Vec4>; 3],
-    shader: &S,
+    material: &M,
     [x_min, x_max, y_min, y_max]: [u32; 4],
     positions_ndc: [Vec2; 3],
     depths: [f32; 3],
@@ -342,16 +342,16 @@ fn rasterize<S: FragmentShader + ?Sized>(
             if *depth_sample <= depth {
                 continue;
             }
-            let shader_input = FragmentInput {
+            let fragment_input = FragmentInput {
                 position: vec3(p_ndc.x, p_ndc.y, depth),
                 depth,
                 uv: triangular_interpolate_vec2(weights, vertices_clip.map(|v| v.uv)),
                 normal: triangular_interpolate_vec3(weights, normals),
             };
-            let fragment_result = shader.fragment(shader_input);
-            *albedo_sample = fragment_result;
-            *position_sample = shader_input.position;
-            *normal_sample = shader_input.normal;
+            let fragment_output = material.fragment(fragment_input);
+            *albedo_sample = fragment_output.albedo;
+            *position_sample = fragment_input.position;
+            *normal_sample = fragment_output.normal;
             *depth_sample = depth;
         }
     }
@@ -616,75 +616,75 @@ impl<T: Into<Vertex> + Copy> IntoVertex for T {
 }
 
 #[allow(dead_code)]
-pub fn draw_vertices<S: FragmentShader + ?Sized, V: IntoVertex>(
+pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &M,
     vertices: &[V],
 ) {
     for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, shader, vertices);
+        draw_triangle(canvas, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_vertices_indexed<S: FragmentShader + ?Sized, V: IntoVertex>(
+pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &M,
     vertices: &[V],
     indices: &[u16],
 ) {
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| vertices[i as usize]);
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, shader, vertices);
+        draw_triangle(canvas, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_vertices_indexed_unchecked<S: FragmentShader + ?Sized, V: IntoVertex>(
+pub unsafe fn draw_vertices_indexed_unchecked<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &M,
     vertices: &[V],
     indices: &[u16],
 ) {
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i as usize) });
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, shader, vertices);
+        draw_triangle(canvas, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_object<S: FragmentShader + ?Sized, V: IntoVertex>(
+pub fn draw_object<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &M,
     object: &Obj<V>,
 ) {
     draw_vertices_indexed(
         canvas,
         model_view,
         projection,
-        shader,
+        material,
         &object.vertices,
         &object.indices,
     );
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_object_unchecked<S: FragmentShader + ?Sized, V: IntoVertex>(
+pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     model_view: Mat4,
     projection: Mat4,
-    shader: &S,
+    material: &M,
     object: &Obj<V>,
 ) {
     unsafe {
@@ -692,7 +692,7 @@ pub unsafe fn draw_object_unchecked<S: FragmentShader + ?Sized, V: IntoVertex>(
             canvas,
             model_view,
             projection,
-            shader,
+            material,
             &object.vertices,
             &object.indices,
         );

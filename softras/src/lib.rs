@@ -4,7 +4,7 @@ use std::{
     fmt::Write as _,
     io,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use derive_more::{Display, Error, From};
@@ -389,7 +389,7 @@ impl Game {
 
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let shader = BasicShader { fill_color: color };
+                let material = materials::ColorMaterial { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -398,7 +398,7 @@ impl Game {
                         &mut self.canvas,
                         view * model,
                         projection,
-                        &shader,
+                        &material,
                         &self.teapot,
                     );
                 }
@@ -409,7 +409,7 @@ impl Game {
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let shader = BasicShader { fill_color: color };
+                let material = materials::ColorMaterial { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -418,7 +418,7 @@ impl Game {
                         &mut self.canvas,
                         view * model,
                         projection,
-                        &shader,
+                        &material,
                         &self.suzanne,
                     );
                 }
@@ -426,7 +426,7 @@ impl Game {
         draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
 
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-            let shader = BasicShader { fill_color: color };
+            let material = materials::ColorMaterial { fill_color: color };
             let model = Mat4::from_translation(position)
                 * Mat4::from_scale(vec3(scale, scale, scale))
                 * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -434,7 +434,7 @@ impl Game {
                 &mut self.canvas,
                 view * model,
                 projection,
-                &shader,
+                &material,
                 &Self::CUBE_VERTICES,
                 &Self::CUBE_INDICIES,
             );
@@ -452,7 +452,7 @@ impl Game {
                 Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
             ];
             let ground_indices = [0u16, 1, 2, 2, 3, 0];
-            let shader = BasicShader {
+            let material = materials::ColorMaterial {
                 fill_color: Rgb::from_hex(0x101820),
             };
             let size = 100.0f32;
@@ -464,19 +464,29 @@ impl Game {
                     &mut self.canvas,
                     view * model,
                     projection,
-                    &shader,
+                    &material,
                     &ground_vertices,
                     &ground_indices,
                 );
             }
         }
 
-        let postprocess_shader = DirectionalShadingPostprocessor {
-            light_direction: view.transform_vector3(vec3(-1., -1., -1.)).normalize(),
+        let t = (SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            % 86400.) as f32;
+        let light_x = t.cos();
+        let light_z = t.sin();
+
+        let postprocessor = postprocessors::DirectionalShading {
+            light_direction: view
+                .transform_vector3(vec3(light_x, -1., light_z))
+                .normalize(),
             shading_intensity: 1.2,
             ..Default::default()
         };
-        postprocess(&mut self.canvas, &postprocess_shader);
+        postprocess(&mut self.canvas, &postprocessor);
     }
 
     fn move_player(&mut self, frame_duration: Duration) {
