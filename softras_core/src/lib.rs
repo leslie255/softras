@@ -397,7 +397,7 @@ impl Game {
         if self.canvas.width() == 0 || self.canvas.height() == 0 {
             return;
         }
-        self.canvas.clear(RgbaU8::from_hex(0x020202FF));
+        self.canvas.clear();
 
         let view = self.camera.view_matrix();
         let projection = self
@@ -494,6 +494,7 @@ impl Game {
         }
 
         let postprocessor = postprocessors::DirectionalShading {
+            background_color: Rgb::from_hex(0x141414),
             light_direction: {
                 let t = (SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -503,8 +504,8 @@ impl Game {
                 view.transform_vector3(vec3(t.cos(), -1., t.sin()))
                     .normalize()
             },
-            shading_intensity: 1.2,
-            ..Default::default()
+            shading_intensity: 1.5,
+            highlightness: 0.7,
         };
         // let postprocessor = postprocessors::Basic;
         postprocess(&mut self.canvas, &postprocessor);

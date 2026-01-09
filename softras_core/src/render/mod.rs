@@ -62,8 +62,8 @@ impl Canvas {
         &self.depth_buffer
     }
 
-    pub fn clear(&mut self, clear_color: RgbaU8) {
-        self.frame_buffer.fill(clear_color);
+    pub fn clear(&mut self) {
+        self.frame_buffer.fill(RgbaU8::zeroed());
         self.albedo_buffer.fill(Rgba::zeroed());
         self.position_buffer.fill(Vec3::zeroed());
         self.normal_buffer.fill(Vec3::zeroed());

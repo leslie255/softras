@@ -108,31 +108,34 @@ pub struct PostprocessInput {
     pub normal: Vec3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BasicPostprocessor {}
-
-impl Postprocessor for BasicPostprocessor {
-    fn postprocess(&self, input: PostprocessInput) -> Rgba {
-        input.albedo
-    }
-}
-
 pub mod postprocessors {
     use crate::*;
 
     /// Directly outputs color right out.
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Basic;
+    #[derive(Default, Debug, Clone, Copy, PartialEq)]
+    pub struct Basic {
+        /// Color of the background where nothing is drawn on.
+        ///
+        /// The default value is `Rgb::from_hex(0x000000)`.
+        pub background_color: Rgb,
+    }
 
     impl Postprocessor for Basic {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
-            input.albedo
+            match input.depth {
+                1. => self.background_color.into(),
+                _ => input.albedo,
+            }
         }
     }
 
     /// Fill color + normal-based directional shading.
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct DirectionalShading {
+        /// Color of the background where nothing is drawn on.
+        ///
+        /// The default value is `Rgb::from_hex(0x000000)`.
+        pub background_color: Rgb,
         /// The direction of global directional light.
         ///
         /// The default value is `vec3(-1., -1., -1.).normalize()`.
@@ -152,6 +155,7 @@ pub mod postprocessors {
     impl Default for DirectionalShading {
         fn default() -> Self {
             Self {
+                background_color: Rgb::from_hex(0x000000),
                 light_direction: vec3(-1., -1., -1.).normalize(),
                 shading_intensity: 0.5,
                 highlightness: 0.6,
@@ -162,7 +166,7 @@ pub mod postprocessors {
     impl Postprocessor for DirectionalShading {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             if input.depth == 1. {
-                return input.albedo;
+                return self.background_color.into();
             }
             let normal = input.normal.normalize_or(vec3(1., 0., 0.));
             let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
