@@ -118,6 +118,17 @@ impl From<[f32; 4]> for Rgba {
     }
 }
 
+impl From<RgbaU8> for Rgba {
+    fn from(pixel: RgbaU8) -> Self {
+        Self {
+            r: pixel.r as f32 / 255.,
+            g: pixel.g as f32 / 255.,
+            b: pixel.b as f32 / 255.,
+            a: pixel.a as f32 / 255.,
+        }
+    }
+}
+
 impl From<Vec4> for Rgba {
     fn from(value: Vec4) -> Self {
         Self {

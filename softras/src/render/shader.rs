@@ -25,16 +25,17 @@ pub struct FragmentOutput {
 }
 
 pub mod materials {
+    use std::{marker::PhantomData, ptr::NonNull};
+
     use crate::*;
 
-    /// Material of just a constant color.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct ColorMaterial {
+    pub struct Colored {
         /// The default value is `Rgb::from_hex(0xFF00FF)`.
         pub fill_color: Rgb,
     }
 
-    impl Default for ColorMaterial {
+    impl Default for Colored {
         fn default() -> Self {
             Self {
                 fill_color: Rgb::from_hex(0xFFFFFF),
@@ -42,10 +43,52 @@ pub mod materials {
         }
     }
 
-    impl Material for ColorMaterial {
+    impl Material for Colored {
         fn fragment(&self, input: FragmentInput) -> FragmentOutput {
             FragmentOutput {
                 albedo: self.fill_color.into(),
+                normal: input.normal,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Textured<'a> {
+        pub pixels: NonNull<RgbaU8>,
+        pub width: u32,
+        pub height: u32,
+        _marker: PhantomData<&'a [RgbaU8]>,
+    }
+
+    impl<'a> Textured<'a> {
+        pub fn new(width: u32, height: u32, pixels: &[RgbaU8]) -> Self {
+            let n_pixels = width as usize * height as usize;
+            assert!(
+                pixels.len() >= n_pixels,
+                "Image of size {width}x{height} must have at least {n_pixels} pixels, but found {}",
+                pixels.len()
+            );
+            Self {
+                pixels: NonNull::from(&pixels[0]),
+                width,
+                height,
+                _marker: PhantomData,
+            }
+        }
+    }
+
+    impl Material for Textured<'_> {
+        fn fragment(&self, input: FragmentInput) -> FragmentOutput {
+            // TODO: wrap mode?
+            let u = input.uv.x.clamp(0., 1.);
+            let v = input.uv.y.clamp(0., 1.);
+            let width_f = self.width as f32;
+            let height_f = self.height as f32;
+            let x = ((u * width_f) as usize).min(self.width as usize - 1);
+            let y = ((v * height_f) as usize).min(self.height as usize - 1);
+            let pixel = unsafe { *self.pixels.as_ptr().add(y * self.width as usize + x) };
+            FragmentOutput {
+                albedo: pixel.into(),
                 normal: input.normal,
             }
         }
@@ -119,7 +162,7 @@ pub mod postprocessors {
     impl Postprocessor for DirectionalShading {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             if input.depth == 1. {
-                return Rgba::from_hex(0);
+                return input.albedo;
             }
             let normal = input.normal.normalize_or(vec3(1., 0., 0.));
             let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));

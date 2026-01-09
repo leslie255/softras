@@ -21,10 +21,6 @@ use render::*;
 use respack::*;
 use utils::*;
 
-fn display_path<'a>(x: &'a (impl AsRef<Path> + 'a + ?Sized)) -> impl std::fmt::Display + 'a {
-    x.as_ref().display()
-}
-
 /// Packs the needed resources from the directory located in `softras/res` into a one respack file.
 ///
 /// # Arguments
@@ -32,6 +28,10 @@ fn display_path<'a>(x: &'a (impl AsRef<Path> + 'a + ?Sized)) -> impl std::fmt::D
 /// * `res_dir` - the path to the `softras/res` directory
 /// * `output` - the output file (e.g. `"resources.respack.bin"`)
 pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceError> {
+    fn display_path<'a>(x: &'a (impl AsRef<Path> + 'a + ?Sized)) -> impl std::fmt::Display + 'a {
+        x.as_ref().display()
+    }
+
     fn pack(res_packer: &mut ResourcePacker, path: &str) -> Result<(), PackResourceError> {
         log::info!("packing resource {} ...", display_path(path));
         res_packer
@@ -49,6 +49,7 @@ pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceErr
     let mut res_packer = ResourcePacker::new(res_dir);
     pack(&mut res_packer, "models/teapot.obj")?;
     pack(&mut res_packer, "models/suzanne.obj")?;
+    pack(&mut res_packer, "textures/grass_block.png")?;
 
     res_packer
         .finish_into_file(output)
@@ -96,6 +97,7 @@ pub struct Game {
     camera: Camera,
     teapot: Obj<obj::Position>,
     suzanne: Obj<obj::TexturedVertex>,
+    grass_block_image: image::RgbaImage,
 }
 
 #[derive(Debug, Display, Error, From)]
@@ -142,6 +144,10 @@ impl Game {
             },
             teapot: obj::load_obj(get_resource(&respack, "models/teapot.obj")?).unwrap(),
             suzanne: obj::load_obj(get_resource(&respack, "models/suzanne.obj")?).unwrap(),
+            grass_block_image: {
+                let bytes = get_resource(&respack, "textures/grass_block.png")?;
+                image::load_from_memory(bytes).unwrap().to_rgba8()
+            },
         })
     }
 
@@ -190,8 +196,10 @@ impl Game {
     }
 
     pub fn notify_key_down(&mut self, key_code: KeyCode) {
-        if key_code == KeyCode::Escape {
-            self.is_paused = !self.is_paused;
+        match key_code {
+            KeyCode::Escape => self.is_paused = !self.is_paused,
+            KeyCode::F2 => self.screenshot(),
+            _ => (),
         }
         self.key_states[key_code as usize] = true;
     }
@@ -245,41 +253,50 @@ impl Game {
 
     /* === End of Public Interface === */
 
-    const CUBE_VERTICES: [Vertex; 24] = [
-        // South
-        Vertex::new([0., 0., 1.], [0., 1.], [0., 0., 1.]),
-        Vertex::new([1., 0., 1.], [1., 1.], [0., 0., 1.]),
-        Vertex::new([1., 1., 1.], [1., 0.], [0., 0., 1.]),
-        Vertex::new([0., 1., 1.], [0., 0.], [0., 0., 1.]),
-        // North
-        Vertex::new([0., 0., 0.], [1., 1.], [0., 0., -1.]),
-        Vertex::new([0., 1., 0.], [1., 0.], [0., 0., -1.]),
-        Vertex::new([1., 1., 0.], [0., 0.], [0., 0., -1.]),
-        Vertex::new([1., 0., 0.], [0., 1.], [0., 0., -1.]),
-        // East
-        Vertex::new([1., 0., 0.], [1., 1.], [1., 0., 0.]),
-        Vertex::new([1., 1., 0.], [1., 0.], [1., 0., 0.]),
-        Vertex::new([1., 1., 1.], [0., 0.], [1., 0., 0.]),
-        Vertex::new([1., 0., 1.], [0., 1.], [1., 0., 0.]),
-        // West
-        Vertex::new([0., 1., 0.], [0., 0.], [-1., 0., 0.]),
-        Vertex::new([0., 0., 0.], [0., 1.], [-1., 0., 0.]),
-        Vertex::new([0., 0., 1.], [1., 1.], [-1., 0., 0.]),
-        Vertex::new([0., 1., 1.], [1., 0.], [-1., 0., 0.]),
-        // Up
-        Vertex::new([1., 1., 0.], [0., 1.], [0., 1., 0.]),
-        Vertex::new([0., 1., 0.], [1., 1.], [0., 1., 0.]),
-        Vertex::new([0., 1., 1.], [1., 0.], [0., 1., 0.]),
-        Vertex::new([1., 1., 1.], [0., 0.], [0., 1., 0.]),
-        // Down
-        Vertex::new([0., 0., 0.], [0., 1.], [0., -1., 0.]),
-        Vertex::new([1., 0., 0.], [1., 1.], [0., -1., 0.]),
-        Vertex::new([1., 0., 1.], [1., 0.], [0., -1., 0.]),
-        Vertex::new([0., 0., 1.], [0., 0.], [0., -1., 0.]),
-    ];
+    #[rustfmt::skip]
+    const GRASS_BLOCK_VERTICES: [Vertex; 24] = {
+        let bottom0: f32 = 0.;
+        let bottom1: f32 = 15. / 48.;
+        let side0: f32 = 16. / 48.;
+        let side1: f32 = 31. / 48.;
+        let top0: f32 = 32. / 48.;
+        let top1: f32 = 1.;
+        [
+            // South
+            Vertex::new([0., 0., 1.], [side0, 1.], [0., 0., 1.]),
+            Vertex::new([1., 0., 1.], [side1, 1.], [0., 0., 1.]),
+            Vertex::new([1., 1., 1.], [side1, 0.], [0., 0., 1.]),
+            Vertex::new([0., 1., 1.], [side0, 0.], [0., 0., 1.]),
+            // North
+            Vertex::new([0., 0., 0.], [side1, 1.], [0., 0., -1.]),
+            Vertex::new([0., 1., 0.], [side1, 0.], [0., 0., -1.]),
+            Vertex::new([1., 1., 0.], [side0, 0.], [0., 0., -1.]),
+            Vertex::new([1., 0., 0.], [side0, 1.], [0., 0., -1.]),
+            // East
+            Vertex::new([1., 0., 0.], [side1, 1.], [1., 0., 0.]),
+            Vertex::new([1., 1., 0.], [side1, 0.], [1., 0., 0.]),
+            Vertex::new([1., 1., 1.], [side0, 0.], [1., 0., 0.]),
+            Vertex::new([1., 0., 1.], [side0, 1.], [1., 0., 0.]),
+            // West
+            Vertex::new([0., 1., 0.], [side0, 0.], [-1., 0., 0.]),
+            Vertex::new([0., 0., 0.], [side0, 1.], [-1., 0., 0.]),
+            Vertex::new([0., 0., 1.], [side1, 1.], [-1., 0., 0.]),
+            Vertex::new([0., 1., 1.], [side1, 0.], [-1., 0., 0.]),
+            // Up
+            Vertex::new([1., 1., 0.], [top0, 1.], [0., 1., 0.]),
+            Vertex::new([0., 1., 0.], [top1, 1.], [0., 1., 0.]),
+            Vertex::new([0., 1., 1.], [top1, 0.], [0., 1., 0.]),
+            Vertex::new([1., 1., 1.], [top0, 0.], [0., 1., 0.]),
+            // Down
+            Vertex::new([0., 0., 0.], [bottom0, 1.], [0., -1., 0.]),
+            Vertex::new([1., 0., 0.], [bottom1, 1.], [0., -1., 0.]),
+            Vertex::new([1., 0., 1.], [bottom1, 0.], [0., -1., 0.]),
+            Vertex::new([0., 0., 1.], [bottom0, 0.], [0., -1., 0.]),
+        ]
+    };
 
     #[rustfmt::skip]
-    const CUBE_INDICIES: [u16; 36] = [
+    const GRASS_BLOCK_INDICIES: [u16; 36] = [
         /* South */ 0, 1, 2, 2, 3, 0,
         /* North */ 4, 5, 6, 6, 7, 4,
         /* East  */ 8, 9, 10, 10, 11, 8,
@@ -389,7 +406,7 @@ impl Game {
 
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::ColorMaterial { fill_color: color };
+                let material = materials::Colored { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -409,7 +426,7 @@ impl Game {
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::ColorMaterial { fill_color: color };
+                let material = materials::Colored { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -425,8 +442,13 @@ impl Game {
             };
         draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
 
-        let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-            let material = materials::ColorMaterial { fill_color: color };
+        let mut draw_grass_block = |scale: f32, position: Vec3, rotation_degrees: f32| -> () {
+            let pixels: &[u8] = self.grass_block_image.as_raw();
+            let material = materials::Textured::new(
+                self.grass_block_image.width(),
+                self.grass_block_image.height(),
+                bytemuck::cast_slice(pixels),
+            );
             let model = Mat4::from_translation(position)
                 * Mat4::from_scale(vec3(scale, scale, scale))
                 * Mat4::from_rotation_y(rotation_degrees.to_degrees());
@@ -435,12 +457,12 @@ impl Game {
                 view * model,
                 projection,
                 &material,
-                &Self::CUBE_VERTICES,
-                &Self::CUBE_INDICIES,
+                &Self::GRASS_BLOCK_VERTICES,
+                &Self::GRASS_BLOCK_INDICIES,
             );
         };
-        draw_cube(1., vec3(6., 0., 2.), 30., Rgb::from_hex(0x008080));
-        draw_cube(1.5, vec3(0., 0., 6.), 45., Rgb::from_hex(0x800080));
+        draw_grass_block(1., vec3(6., 0., 2.), 30.);
+        draw_grass_block(1.5, vec3(0., 0., 6.), 45.);
 
         // Draw ground.
         {
@@ -452,7 +474,7 @@ impl Game {
                 Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
             ];
             let ground_indices = [0u16, 1, 2, 2, 3, 0];
-            let material = materials::ColorMaterial {
+            let material = materials::Colored {
                 fill_color: Rgb::from_hex(0x101820),
             };
             let size = 100.0f32;
@@ -471,22 +493,35 @@ impl Game {
             }
         }
 
-        let t = (SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
-            % 86400.) as f32;
-        let light_x = t.cos();
-        let light_z = t.sin();
-
         let postprocessor = postprocessors::DirectionalShading {
-            light_direction: view
-                .transform_vector3(vec3(light_x, -1., light_z))
-                .normalize(),
+            light_direction: {
+                let t = (SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64()
+                    % 86400.) as f32;
+                view.transform_vector3(vec3(t.cos(), -1., t.sin()))
+                    .normalize()
+            },
             shading_intensity: 1.2,
             ..Default::default()
         };
+        // let postprocessor = postprocessors::Basic;
         postprocess(&mut self.canvas, &postprocessor);
+    }
+
+    fn screenshot(&self) {
+        let path: &Path = "screenshot.png".as_ref();
+        match image::save_buffer(
+            path,
+            bytemuck::cast_slice(self.canvas.frame_buffer()),
+            self.canvas.width(),
+            self.canvas.height(),
+            image::ExtendedColorType::Rgba8,
+        ) {
+            Ok(()) => log::info!("saved screenshot to {}", path.display()),
+            Err(error) => log::error!("unable to save screenshot to {}: {error}", path.display()),
+        }
     }
 
     fn move_player(&mut self, frame_duration: Duration) {

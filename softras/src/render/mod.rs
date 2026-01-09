@@ -1,4 +1,4 @@
-use std::f32;
+use std::{array, f32};
 
 use bytemuck::Zeroable;
 use glam::*;
@@ -73,11 +73,16 @@ impl Canvas {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.frame_buffer.resize(self.n_pixels(), Zeroable::zeroed());
-        self.albedo_buffer.resize(self.n_pixels(), Zeroable::zeroed());
-        self.position_buffer.resize(self.n_pixels(), Zeroable::zeroed());
-        self.normal_buffer.resize(self.n_pixels(), Zeroable::zeroed());
-        self.depth_buffer.resize(self.n_pixels(), Zeroable::zeroed());
+        self.frame_buffer
+            .resize(self.n_pixels(), Zeroable::zeroed());
+        self.albedo_buffer
+            .resize(self.n_pixels(), Zeroable::zeroed());
+        self.position_buffer
+            .resize(self.n_pixels(), Zeroable::zeroed());
+        self.normal_buffer
+            .resize(self.n_pixels(), Zeroable::zeroed());
+        self.depth_buffer
+            .resize(self.n_pixels(), Zeroable::zeroed());
     }
 
     pub fn n_pixels(&self) -> usize {
@@ -202,28 +207,24 @@ fn after_near_clipping<S: Material + ?Sized>(
     vertices_clip: [Vertex<Vec4>; 3],
     material: &S,
 ) {
-    // === Perspective Division ===
-
-    let vertices_ndc: [Vertex; 3] = vertices_clip.map(|vertex| {
-        let position = vertex.position.xyz() / vertex.position.w;
-        vertex.with_position(position)
-    });
-    // Convenience declarations.
-    let positions_ndc: [Vec2; 3] = vertices_ndc.map(|vertex| vertex.position.xy());
-    let depths: [f32; 3] = vertices_ndc.map(|vertex| vertex.position.z);
+    let positions_div_w = vertices_clip.map(|vertex| vertex.position.xyz() / vertex.position.w);
+    let positions_ndc = positions_div_w.map(|p| p.xy());
 
     if !is_clockwise_winding(positions_ndc) {
         return;
     }
 
     let normal_transform = model_view.inverse().transpose();
-    let normals: [Vec3; 3] = [
-        vertices_clip[0].position.w * normal_transform.transform_vector3(vertices_clip[0].normal),
-        vertices_clip[1].position.w * normal_transform.transform_vector3(vertices_clip[1].normal),
-        vertices_clip[2].position.w * normal_transform.transform_vector3(vertices_clip[2].normal),
-    ];
-
-    // === Rasterization ===
+    let vertices_ndc: [VertexNdc; 3] = array::from_fn(|i| {
+        let vertex_clip = vertices_clip[i];
+        let w = vertex_clip.position.w;
+        VertexNdc {
+            w_inv: 1. / w,
+            position_div_w: positions_div_w[i],
+            uv_div_w: vertex_clip.uv / w,
+            normal: w * normal_transform.transform_vector3(vertex_clip.normal),
+        }
+    });
 
     // Bounding box of pixels that we need to sample.
     let bounds @ [x_min, x_max, y_min, y_max]: [u32; 4] = {
@@ -248,81 +249,28 @@ fn after_near_clipping<S: Material + ?Sized>(
         // (Chunking is basically only an optimization measure for dealing with triangles that
         // occupy big screen spaces, so if you are checking out the code base just to understand
         // the workings of rasterization process, simply assume the other no chunking path).
-        rasterize_chunked(
-            canvas,
-            vertices_clip,
-            material,
-            bounds,
-            positions_ndc,
-            depths,
-            normals,
-            chunk_size,
-        );
+        rasterize_chunked(canvas, vertices_ndc, material, bounds, chunk_size);
     } else {
         // No chunking case.
-        rasterize(
-            canvas,
-            vertices_clip,
-            material,
-            bounds,
-            positions_ndc,
-            depths,
-            normals,
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn rasterize_chunked<S: Material + ?Sized>(
-    canvas: &mut Canvas,
-    vertices_clip: [Vertex<Vec4>; 3],
-    material: &S,
-    [x_min, x_max, y_min, y_max]: [u32; 4],
-    positions_ndc: [Vec2; 3],
-    depths: [f32; 3],
-    normals: [Vec3; 3],
-    chunk_size: u32,
-) {
-    let positions_pixel = positions_ndc.map(|p_ndc| {
-        vec2(
-            ndc_to_pixel_x(p_ndc.x, canvas.width),
-            ndc_to_pixel_y(p_ndc.y, canvas.height),
-        )
-    });
-    for y_min in step_range(y_min, (y_max + 1).next_multiple_of(chunk_size), chunk_size) {
-        for x_min in step_range(x_min, (x_max + 1).next_multiple_of(chunk_size), chunk_size) {
-            let x_max = (x_min + chunk_size).min(canvas.width - 1);
-            let y_max = (y_min + chunk_size).min(canvas.height - 1);
-            if rect_triangle_overlap(
-                positions_pixel,
-                [x_min, x_max, y_min, y_max].map(|u| u as f32),
-            ) {
-                rasterize(
-                    canvas,
-                    vertices_clip,
-                    material,
-                    [x_min, x_max, y_min, y_max],
-                    positions_ndc,
-                    depths,
-                    normals,
-                );
-            }
-        }
+        rasterize(canvas, vertices_ndc, material, bounds);
     }
 }
 
 fn rasterize<M: Material + ?Sized>(
     canvas: &mut Canvas,
-    vertices_clip: [Vertex<Vec4>; 3],
+    vertices_ndc: [VertexNdc; 3],
     material: &M,
     [x_min, x_max, y_min, y_max]: [u32; 4],
-    positions_ndc: [Vec2; 3],
-    depths: [f32; 3],
-    normals: [Vec3; 3],
 ) {
     debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
     debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
+
+    let positions_ndc: [Vec2; 3] = vertices_ndc.map(|p| p.position_div_w.xy());
+    let depths: [f32; 3] = vertices_ndc.map(|p| p.position_div_w.z);
+    let uvs_div_w: [Vec2; 3] = vertices_ndc.map(|p| p.uv_div_w);
+    let normals: [Vec3; 3] = vertices_ndc.map(|p| p.normal);
+    let w_invs: [f32; 3] = vertices_ndc.map(|p| p.w_inv);
 
     for x_pixel in x_min..=x_max {
         for y_pixel in y_min..=y_max {
@@ -331,28 +279,59 @@ fn rasterize<M: Material + ?Sized>(
             let position_sample = unsafe { canvas.position_buffer.get_unchecked_mut(i_pixel) };
             let normal_sample = unsafe { canvas.normal_buffer.get_unchecked_mut(i_pixel) };
             let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
+
             let p_ndc = vec2(
                 pixel_to_ndc_x(x_pixel, canvas.width),
                 pixel_to_ndc_y(y_pixel, canvas.height),
             );
-            let Some(weights) = barycentric_weights_inside(positions_ndc, p_ndc) else {
+            let weights = barycentric_weights(positions_ndc, p_ndc);
+            if weights.iter().any(|&weight| weight < 0.) {
                 continue;
-            };
+            }
             let depth = triangular_interpolate(weights, depths);
             if *depth_sample <= depth {
                 continue;
             }
+            let w = 1. / triangular_interpolate(weights, w_invs);
+            let uv = w * triangular_interpolate_vec2(weights, uvs_div_w);
+            let normal = triangular_interpolate_vec3(weights, normals);
             let fragment_input = FragmentInput {
-                position: vec3(p_ndc.x, p_ndc.y, depth),
+                position: w * vec3(p_ndc.x, p_ndc.y, depth),
                 depth,
-                uv: triangular_interpolate_vec2(weights, vertices_clip.map(|v| v.uv)),
-                normal: triangular_interpolate_vec3(weights, normals),
+                uv,
+                normal,
             };
+
             let fragment_output = material.fragment(fragment_input);
             *albedo_sample = fragment_output.albedo;
             *position_sample = fragment_input.position;
             *normal_sample = fragment_output.normal;
             *depth_sample = depth;
+        }
+    }
+}
+
+fn rasterize_chunked<M: Material + ?Sized>(
+    canvas: &mut Canvas,
+    vertices_ndc: [VertexNdc; 3],
+    material: &M,
+    [x_min, x_max, y_min, y_max]: [u32; 4],
+    chunk_size: u32,
+) {
+    let positions_pixel = vertices_ndc.map(|p_ndc| {
+        vec2(
+            ndc_to_pixel_x(p_ndc.position_div_w.x, canvas.width),
+            ndc_to_pixel_y(p_ndc.position_div_w.y, canvas.height),
+        )
+    });
+    for y_min_ in step_range(y_min, (y_max + 1).next_multiple_of(chunk_size), chunk_size) {
+        for x_min_ in step_range(x_min, (x_max + 1).next_multiple_of(chunk_size), chunk_size) {
+            let x_max_ = (x_min_ + chunk_size).min(canvas.width - 1);
+            let y_max_ = (y_min_ + chunk_size).min(canvas.height - 1);
+            let bounds_chunk = [x_min_, x_max_, y_min_, y_max_];
+            if rect_triangle_overlap(positions_pixel, bounds_chunk.map(|u| u as f32)) {
+                rasterize(canvas, vertices_ndc, material, bounds_chunk);
+            }
         }
     }
 }
@@ -540,6 +519,15 @@ impl Camera {
 
         Mat4::perspective_infinite_rh(fovy, aspect, near)
     }
+}
+
+/// A vertex in NDC space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VertexNdc {
+    pub position_div_w: Vec3,
+    pub w_inv: f32,
+    pub uv_div_w: Vec2,
+    pub normal: Vec3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
