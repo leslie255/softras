@@ -1398,19 +1398,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "muilib_backend"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "clap",
- "derive_more",
- "env_logger",
- "log",
- "muilib",
- "softras",
-]
-
-[[package]]
 name = "naga"
 version = "27.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2428,7 +2415,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "softras"
+name = "softras_core"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
@@ -2438,6 +2425,19 @@ dependencies = [
  "log",
  "obj-rs",
  "typed-path",
+]
+
+[[package]]
+name = "softras_muilib"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "clap",
+ "derive_more",
+ "env_logger",
+ "log",
+ "muilib",
+ "softras_core",
 ]
 
 [[package]]

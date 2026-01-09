@@ -49,7 +49,7 @@ struct SubcommandRunArgs {
 #[derive(Debug, Clone, clap::Parser)]
 struct SubcommandPackResArgs {
     /// Path of the resource directory.
-    #[clap(short = 'd', long = "res-dir", default_value_t = String::from("softras/res"))]
+    #[clap(short = 'd', long = "res-dir", default_value_t = String::from("softras_core/res"))]
     res_dir: String,
     /// Path of the output file.
     #[clap(short = 'o', long = "output", default_value_t = String::from("resources.respack.bin"))]
@@ -83,7 +83,7 @@ fn subcommand_pack_res(args: SubcommandPackResArgs) {
             exit(1);
         }
     }
-    softras::pack_resources(args.res_dir.as_ref(), args.output.as_ref())
+    softras_core::pack_resources(args.res_dir.as_ref(), args.output.as_ref())
         .unwrap_or_else(|error| log::error!("error packing resources: {error}"));
 }
 
@@ -116,7 +116,7 @@ struct App<'cx> {
     canvas: muilib::WindowCanvas<'cx>,
     max_width: u32,
     max_height: u32,
-    game: softras::Game,
+    game: softras_core::Game,
     image_view: muilib::ImageView,
     overlay_text_view: muilib::TextView<'cx>,
     cursor_captured: bool,
@@ -141,7 +141,7 @@ impl<'cx>
                 .unwrap(),
         );
 
-        let game = softras::Game::new(respack_bytes).unwrap_or_else(|error| {
+        let game = softras_core::Game::new(respack_bytes).unwrap_or_else(|error| {
             log::error!("unable to initialize game: {error}");
             exit(1);
         });
@@ -265,7 +265,7 @@ impl<'cx> ApplicationHandler for App<'cx> {
             } => {
                 let key_code = match event.physical_key {
                     PhysicalKey::Code(key_code_winit) => key_code::winit_to_softras(key_code_winit),
-                    PhysicalKey::Unidentified(_) => softras::KeyCode::Unidentified,
+                    PhysicalKey::Unidentified(_) => softras_core::KeyCode::Unidentified,
                 };
                 if event.state.is_pressed() {
                     self.game.notify_key_down(key_code);
@@ -279,9 +279,9 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 button,
             } => {
                 let button_ = match button {
-                    MouseButton::Left => softras::MouseButton::Left,
-                    MouseButton::Right => softras::MouseButton::Right,
-                    MouseButton::Middle => softras::MouseButton::Middle,
+                    MouseButton::Left => softras_core::MouseButton::Left,
+                    MouseButton::Right => softras_core::MouseButton::Right,
+                    MouseButton::Middle => softras_core::MouseButton::Middle,
                     _ => return,
                 };
                 if state.is_pressed() {
