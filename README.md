@@ -2,7 +2,7 @@
 
 **Software Rasterizer** (CPU-side 3D rendering)
 
-<img width="400" alt="a bunch of different objects" src="https://github.com/user-attachments/assets/99f93396-c006-41d3-b2f2-ea6a93a87e32" /> <img width="400" alt="floating cubes" src="https://github.com/user-attachments/assets/c08e26e5-f2cf-4833-8ed0-bc9374ba7b7e"/>
+<img width="600" alt="different objects" src="https://github.com/user-attachments/assets/4b31cc9b-3737-4358-9dfd-462883533150"/>
 
 ## Project Structure
 
