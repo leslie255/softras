@@ -430,8 +430,8 @@ impl Game {
                 }
             };
         draw_teapot(1., vec3(0., 0., 0.), 0., Rgb::from_hex(0xC0C0C0));
-        draw_teapot(0.6, vec3(3., 0., 3.), 45., Rgb::from_hex(0xE0A080));
-        draw_teapot(0.7, vec3(-3., 0., 4.), 225., Rgb::from_hex(0xA080E0));
+        draw_teapot(0.6, vec3(3., 0., 3.), -45., Rgb::from_hex(0xE0A080));
+        draw_teapot(0.7, vec3(-3., 0., 4.), -225., Rgb::from_hex(0xA080E0));
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
@@ -450,7 +450,7 @@ impl Game {
                     );
                 }
             };
-        draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
+        draw_suzanne(1., vec3(5., 1., 6.), -45., Rgb::from_hex(0xC08040));
 
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32| -> () {
             let pixels: &[u8] = self.test_cube_image.as_raw();
@@ -505,8 +505,9 @@ impl Game {
             }
         }
 
+        let background_color = Rgb::from_hex(0x141414);
         let postprocessor = postprocessors::DirectionalShading {
-            background_color: Rgb::from_hex(0x141414),
+            background_color,
             light_direction: {
                 let t = (SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -519,7 +520,7 @@ impl Game {
             shading_intensity: 1.0,
             highlightness: 0.7,
         };
-        // let postprocessor = postprocessors::Basic;
+        // let postprocessor = postprocessors::Basic { background_color };
         postprocess(&mut self.canvas, &postprocessor);
     }
 
