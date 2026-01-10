@@ -16,7 +16,7 @@ The project is divided into two cargo crates:
 To build and run:
 
 ```bash
-$ cargo run --release --package softras_wgpu_winit
+$ cargo run --release --package softras_winit_wgpu
 ```
 
 This command has to be executed at the root of the project directory, as the program needs access to the `assets.respack.bin` file for game assets. Alternatively, you may provide the asset file path with the `--res` argument. For more information, see `cargo run --release --package softras_wgpu_winit --help`.
