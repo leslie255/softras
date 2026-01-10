@@ -68,14 +68,15 @@ fn main() {
 }
 
 fn subcommand_pack_res(args: SubcommandPackResArgs) {
-    match fs::metadata(&args.res_dir) {
+    let res_dir: &Path = args.res_dir.as_ref();
+    match fs::metadata(res_dir) {
         Ok(metadata) if metadata.is_dir() => (),
         Ok(_) => {
-            log::error!("path {:?} exists but is not a directory", &args.res_dir);
+            log::error!("path {} exists but is not a directory", res_dir.display());
             exit(1);
         }
         Err(_) => {
-            log::error!("directory {:?} does not exist", &args.res_dir);
+            log::error!("directory {} does not exist", res_dir.display());
             exit(1);
         }
     }
