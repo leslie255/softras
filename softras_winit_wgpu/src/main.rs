@@ -2,7 +2,7 @@
 
 mod key_code;
 
-use std::{fs, path::Path, process::exit, sync::Arc};
+use std::{fmt::Write as _, fs, path::Path, process::exit, sync::Arc};
 
 use clap::Parser as _;
 use pollster::FutureExt;
@@ -32,10 +32,10 @@ enum ProgramSubcommand {
 #[derive(Debug, Clone, clap::Parser)]
 struct SubcommandRunArgs {
     /// Preferred display width.
-    #[clap(short = 'W', long = "display-width", default_value_t = 800)]
+    #[clap(short = 'W', long, default_value_t = 800)]
     display_width: u32,
     /// Preferred display height.
-    #[clap(short = 'H', long = "display-height", default_value_t = 600)]
+    #[clap(short = 'H', long, default_value_t = 600)]
     display_height: u32,
     /// The game's respack file.
     #[clap(short = 'r', long = "res", default_value_t = String::from("assets.respack.bin"))]
@@ -95,7 +95,9 @@ static SPACE_MONO_REGULAR_TTF: &[u8] = include_bytes!("../SpaceMono-Regular.ttf"
 
 struct WindowState {
     window: Arc<Window>,
-    game: softras_core::Game,
+    /// `None` if game initialization failed, in which case `init_error_message` would be displayed
+    /// as overlay text.
+    game: Option<softras_core::Game>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
@@ -108,6 +110,9 @@ struct WindowState {
     game_display_size: (u32, u32),
     cursor_captured: bool,
     text_brush: wgpu_text::TextBrush<FontRef<'static>>,
+    /// If initialization failed, this message would be displayed in the window and the game frame
+    /// would not be drawn.
+    init_error_message: String,
 }
 
 impl WindowState {
@@ -123,18 +128,36 @@ impl WindowState {
         );
         let window_size = window.inner_size();
 
-        let respack_path: &Path = args.respack.as_ref();
-        let respack_bytes = fs::read(respack_path).unwrap_or_else(|error| {
-            eprintln!("error reading file {}: {error}", respack_path.display());
-            event_loop.exit();
-            unreachable!()
-        });
-        let mut game = softras_core::Game::new(respack_bytes).unwrap_or_else(|error| {
-            eprintln!("error initializing game: {error}");
-            event_loop.exit();
-            unreachable!()
-        });
-        game.notify_display_resize(window_size.width, window_size.height);
+        let mut init_error_message = String::new();
+
+        let game: Option<softras_core::Game> = 'block: {
+            let respack_path: &Path = args.respack.as_ref();
+            let respack_bytes = match fs::read(respack_path) {
+                Ok(respack_bytes) => respack_bytes,
+                Err(error) => {
+                    log::error!(
+                        "error reading assets file {}: {error}",
+                        respack_path.display()
+                    );
+                    init_error_message = format!(
+                        "error reading assets file {}: {error}",
+                        respack_path.display(),
+                    );
+                    if let Ok(pwd) = std::env::current_dir() {
+                        write!(&mut init_error_message, "\npwd: {}", pwd.display()).unwrap();
+                    }
+                    break 'block None;
+                }
+            };
+            match softras_core::Game::new(respack_bytes) {
+                Ok(game) => Some(game),
+                Err(error) => {
+                    log::error!("error initializing game: {error}");
+                    init_error_message = format!("error initializing game: {error}");
+                    None
+                }
+            }
+        };
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
@@ -240,6 +263,7 @@ impl WindowState {
             max_height: args.display_height,
             cursor_captured: false,
             text_brush,
+            init_error_message,
         };
 
         self_.configure_surface();
@@ -275,57 +299,24 @@ impl WindowState {
                     ..Default::default()
                 });
 
-        let frame_output = self.game.frame();
+        let frame_output = self.game.as_mut().map(|game| game.frame());
 
-        let bind_group: Option<wgpu::BindGroup> =
-            match (frame_output.display_width, frame_output.display_height) {
-                (0, 0) => None,
-                (_, _) => {
-                    let texture = self.device.create_texture_with_data(
-                        &self.queue,
-                        &wgpu::TextureDescriptor {
-                            label: None,
-                            size: wgpu::Extent3d {
-                                width: frame_output.display_width,
-                                height: frame_output.display_height,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                | wgpu::TextureUsages::COPY_DST,
-                            view_formats: &[],
-                        },
-                        wgpu::wgt::TextureDataOrder::default(),
-                        frame_output.display_buffer,
-                    );
-                    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: None,
-                        layout: &self.bind_group_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&texture_view),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::Sampler(&self.sampler),
-                            },
-                        ],
-                    }))
-                }
-            };
-
-        let text_section = glyph_brush::Section::default()
-            .with_screen_position((8., 8.))
-            .add_text(
-                glyph_brush::Text::new(frame_output.overlay_text)
-                    .with_color([1., 1., 1., 1.])
-                    .with_scale(17. * self.window.scale_factor() as f32),
-            );
+        let bind_group: Option<wgpu::BindGroup> = match frame_output {
+            Some(frame_output)
+                if frame_output.display_width != 0 && frame_output.display_height != 0 =>
+            {
+                Some(Self::create_bind_group(
+                    &self.device,
+                    &self.queue,
+                    &self.sampler,
+                    &self.bind_group_layout,
+                    frame_output.display_width,
+                    frame_output.display_height,
+                    frame_output.display_buffer,
+                ))
+            }
+            _ => None,
+        };
 
         let window_size = self.window.inner_size();
         self.text_brush.resize_view(
@@ -334,11 +325,22 @@ impl WindowState {
             &self.queue,
         );
 
+        let overlay_text: &str = match frame_output {
+            Some(frame_output) => frame_output.overlay_text,
+            None => &self.init_error_message,
+        };
+        let text_section = glyph_brush::Section::default()
+            .with_screen_position((8., 8.))
+            .add_text(
+                glyph_brush::Text::new(overlay_text)
+                    .with_color([1., 1., 1., 1.])
+                    .with_scale(17. * self.window.scale_factor() as f32),
+            );
         self.text_brush
             .queue(&self.device, &self.queue, &[text_section])
             .unwrap();
 
-        let requests_capture_cursor = frame_output.captures_cursor;
+        let requests_capture_cursor = frame_output.is_some_and(|fo| fo.captures_cursor);
         if requests_capture_cursor != self.cursor_captured {
             self.cursor_captured = requests_capture_cursor;
             if requests_capture_cursor {
@@ -358,7 +360,12 @@ impl WindowState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.,
+                        g: 0.21586050011389926,
+                        b: 0.21586050011389926,
+                        a: 1.,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -383,6 +390,51 @@ impl WindowState {
         surface_texture.present();
     }
 
+    fn create_bind_group(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sampler: &wgpu::Sampler,
+        layout: &wgpu::BindGroupLayout,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> wgpu::BindGroup {
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::wgt::TextureDataOrder::default(),
+            pixels,
+        );
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        })
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => {
@@ -390,6 +442,7 @@ impl WindowState {
                 self.window.request_redraw();
             }
             WindowEvent::Resized(size) => {
+                self.configure_surface();
                 let width = size.width as f32;
                 let height = size.height as f32;
                 let max_width = self.max_width as f32;
@@ -398,11 +451,12 @@ impl WindowState {
                     true => (max_width, max_width / width * height),
                     false => (max_height / height * width, max_height),
                 };
-                self.game.notify_display_resize(
-                    (width as u32).min(size.width),
-                    (height as u32).min(size.height),
-                );
-                self.configure_surface();
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_display_resize(
+                        (width as u32).min(size.width),
+                        (height as u32).min(size.height),
+                    );
+                }
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -412,14 +466,18 @@ impl WindowState {
                 event,
                 is_synthetic: false,
             } => {
-                let key_code = match event.physical_key {
-                    PhysicalKey::Code(key_code_winit) => key_code::winit_to_softras(key_code_winit),
-                    PhysicalKey::Unidentified(_) => softras_core::KeyCode::Unidentified,
-                };
-                if event.state.is_pressed() {
-                    self.game.notify_key_down(key_code);
-                } else {
-                    self.game.notify_key_up(key_code);
+                if let Some(game) = self.game.as_mut() {
+                    let key_code = match event.physical_key {
+                        PhysicalKey::Code(key_code_winit) => {
+                            key_code::winit_to_softras(key_code_winit)
+                        }
+                        PhysicalKey::Unidentified(_) => softras_core::KeyCode::Unidentified,
+                    };
+                    if event.state.is_pressed() {
+                        game.notify_key_down(key_code);
+                    } else {
+                        game.notify_key_up(key_code);
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -427,51 +485,66 @@ impl WindowState {
                 state,
                 button,
             } => {
-                let button_ = match button {
-                    MouseButton::Left => softras_core::MouseButton::Left,
-                    MouseButton::Right => softras_core::MouseButton::Right,
-                    MouseButton::Middle => softras_core::MouseButton::Middle,
-                    _ => return,
-                };
-                if state.is_pressed() {
-                    self.game.notify_cursor_down(button_);
-                } else {
-                    self.game.notify_cursor_up(button_);
+                if let Some(game) = self.game.as_mut() {
+                    let button_ = match button {
+                        MouseButton::Left => softras_core::MouseButton::Left,
+                        MouseButton::Right => softras_core::MouseButton::Right,
+                        MouseButton::Middle => softras_core::MouseButton::Middle,
+                        _ => return,
+                    };
+                    if state.is_pressed() {
+                        game.notify_cursor_down(button_);
+                    } else {
+                        game.notify_cursor_up(button_);
+                    }
                 }
             }
             WindowEvent::CursorEntered { device_id: _ } => {
-                self.game.notify_cursor_entered();
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_cursor_entered();
+                }
             }
             WindowEvent::CursorLeft { device_id: _ } => {
-                self.game.notify_cursor_left();
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_cursor_left();
+                }
             }
             WindowEvent::CursorMoved {
                 device_id: _,
                 position,
             } => {
-                let window_size = self.window.inner_size();
-                self.game.notify_cursor_moved_to_position(
-                    position.x as f32 / window_size.width as f32 * self.game_display_size.0 as f32,
-                    position.y as f32 / window_size.height as f32 * self.game_display_size.1 as f32,
-                );
+                if let Some(game) = self.game.as_mut() {
+                    let window_size = self.window.inner_size();
+                    game.notify_cursor_moved_to_position(
+                        position.x as f32 / window_size.width as f32
+                            * self.game_display_size.0 as f32,
+                        position.y as f32 / window_size.height as f32
+                            * self.game_display_size.1 as f32,
+                    );
+                }
             }
             WindowEvent::MouseWheel {
                 device_id: _,
                 delta: MouseScrollDelta::LineDelta(x, y),
                 phase: _,
             } => {
-                self.game.notify_cursor_scrolled_lines(x, y);
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_cursor_scrolled_lines(x, y);
+                }
             }
             WindowEvent::MouseWheel {
                 device_id: _,
                 delta: MouseScrollDelta::PixelDelta(delta),
                 phase: _,
             } => {
-                self.game
-                    .notify_cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_cursor_scrolled_pixels(delta.x as f32, delta.y as f32);
+                }
             }
             WindowEvent::Focused(true) => {
-                self.game.notify_focused();
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_focused();
+                }
                 if self.cursor_captured {
                     self.capture_cursor();
                 } else {
@@ -479,16 +552,19 @@ impl WindowState {
                 }
             }
             WindowEvent::Focused(false) => {
-                self.game.notify_unfocused();
+                if let Some(game) = self.game.as_mut() {
+                    game.notify_unfocused();
+                }
             }
             _ => (),
         }
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = event {
-            self.game
-                .notify_cursor_moved_by_delta(delta.0 as f32, delta.1 as f32);
+        if let DeviceEvent::MouseMotion { delta } = event
+            && let Some(game) = self.game.as_mut()
+        {
+            game.notify_cursor_moved_by_delta(delta.0 as f32, delta.1 as f32);
         }
     }
 
