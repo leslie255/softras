@@ -235,8 +235,8 @@ impl WindowState {
             bind_group_layout,
             sampler,
             game_display_size: (window_size.width, window_size.height),
-            max_width: 800,
-            max_height: 600,
+            max_width: args.display_width,
+            max_height: args.display_height,
             cursor_captured: false,
             text_brush,
         };
