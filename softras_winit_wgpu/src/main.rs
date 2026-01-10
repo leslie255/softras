@@ -326,6 +326,13 @@ impl WindowState {
                     .with_scale(17. * self.window.scale_factor() as f32),
             );
 
+        let window_size = self.window.inner_size();
+        self.text_brush.resize_view(
+            window_size.width as f32,
+            window_size.height as f32,
+            &self.queue,
+        );
+
         self.text_brush
             .queue(&self.device, &self.queue, &[text_section])
             .unwrap();
@@ -394,8 +401,7 @@ impl WindowState {
                     (width as u32).min(size.width),
                     (height as u32).min(size.height),
                 );
-                self.text_brush
-                    .resize_view(size.width as f32, size.height as f32, &self.queue);
+                self.configure_surface();
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
