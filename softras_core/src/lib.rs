@@ -49,7 +49,7 @@ pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceErr
     let mut res_packer = ResourcePacker::new(res_dir);
     pack(&mut res_packer, "models/teapot.obj")?;
     pack(&mut res_packer, "models/suzanne.obj")?;
-    pack(&mut res_packer, "textures/grass_block.png")?;
+    pack(&mut res_packer, "textures/test_cube.png")?;
 
     res_packer
         .finish_into_file(output)
@@ -95,9 +95,9 @@ pub struct Game {
     previous_frame_instant: Option<Instant>,
     is_paused: bool,
     camera: Camera,
-    teapot: Obj<obj::Position>,
-    suzanne: Obj<obj::TexturedVertex>,
-    grass_block_image: image::RgbaImage,
+    teapot: Obj<obj::Position, u32>,
+    suzanne: Obj<obj::TexturedVertex, u32>,
+    test_cube_image: image::RgbaImage,
 }
 
 #[derive(Debug, Display, Error, From)]
@@ -144,8 +144,8 @@ impl Game {
             },
             teapot: obj::load_obj(get_resource(&respack, "models/teapot.obj")?).unwrap(),
             suzanne: obj::load_obj(get_resource(&respack, "models/suzanne.obj")?).unwrap(),
-            grass_block_image: {
-                let bytes = get_resource(&respack, "textures/grass_block.png")?;
+            test_cube_image: {
+                let bytes = get_resource(&respack, "textures/test_cube.png")?;
                 image::load_from_memory(bytes).unwrap().to_rgba8()
             },
         })
@@ -216,9 +216,12 @@ impl Game {
         _ = button;
     }
 
-    pub fn notify_cursor_moved(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
-        self.cursor_position = Some(vec2(x, y));
+    pub fn notify_cursor_moved_by_delta(&mut self, dx: f32, dy: f32) {
         self.rotation_player(vec2(dx, dy));
+    }
+
+    pub fn notify_cursor_moved_to_position(&mut self, x: f32, y: f32) {
+        self.cursor_position = Some(vec2(x, y));
     }
 
     pub fn notify_cursor_entered(&mut self) {}
@@ -254,12 +257,12 @@ impl Game {
     /* === End of Public Interface === */
 
     #[rustfmt::skip]
-    const GRASS_BLOCK_VERTICES: [Vertex; 24] = {
+    const CUBE_VERTICES: [Vertex; 24] = {
         let bottom0: f32 = 0.;
-        let bottom1: f32 = 15. / 48.;
-        let side0: f32 = 16. / 48.;
-        let side1: f32 = 31. / 48.;
-        let top0: f32 = 32. / 48.;
+        let bottom1: f32 = 1.;
+        let side0: f32 = 0.;
+        let side1: f32 = 1.;
+        let top0: f32 = 0.;
         let top1: f32 = 1.;
         [
             // South
@@ -296,7 +299,7 @@ impl Game {
     };
 
     #[rustfmt::skip]
-    const GRASS_BLOCK_INDICIES: [u16; 36] = [
+    const CUBE_INDICIES: [u32; 36] = [
         /* South */ 0, 1, 2, 2, 3, 0,
         /* North */ 4, 5, 6, 6, 7, 4,
         /* East  */ 8, 9, 10, 10, 11, 8,
@@ -404,15 +407,21 @@ impl Game {
             .camera
             .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
 
+        let render_options = RenderOptions {
+            cull_face: CullFaceMode::CounterClockwise,
+            disable_chunking: false,
+        };
+
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
                 let material = materials::Colored { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
-                    * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+                    * Mat4::from_rotation_y(rotation_degrees.to_radians());
                 unsafe {
                     draw_object_unchecked(
                         &mut self.canvas,
+                        render_options,
                         view * model,
                         projection,
                         &material,
@@ -429,10 +438,11 @@ impl Game {
                 let material = materials::Colored { fill_color: color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
-                    * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+                    * Mat4::from_rotation_y(rotation_degrees.to_radians());
                 unsafe {
                     draw_object_unchecked(
                         &mut self.canvas,
+                        render_options,
                         view * model,
                         projection,
                         &material,
@@ -442,27 +452,28 @@ impl Game {
             };
         draw_suzanne(1., vec3(5., 1., 6.), -135., Rgb::from_hex(0xC08040));
 
-        let mut draw_grass_block = |scale: f32, position: Vec3, rotation_degrees: f32| -> () {
-            let pixels: &[u8] = self.grass_block_image.as_raw();
+        let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32| -> () {
+            let pixels: &[u8] = self.test_cube_image.as_raw();
             let material = materials::Textured::new(
-                self.grass_block_image.width(),
-                self.grass_block_image.height(),
+                self.test_cube_image.width(),
+                self.test_cube_image.height(),
                 bytemuck::cast_slice(pixels),
             );
             let model = Mat4::from_translation(position)
                 * Mat4::from_scale(vec3(scale, scale, scale))
-                * Mat4::from_rotation_y(rotation_degrees.to_degrees());
+                * Mat4::from_rotation_y(rotation_degrees.to_radians());
             draw_vertices_indexed(
                 &mut self.canvas,
+                render_options,
                 view * model,
                 projection,
                 &material,
-                &Self::GRASS_BLOCK_VERTICES,
-                &Self::GRASS_BLOCK_INDICIES,
+                &Self::CUBE_VERTICES,
+                &Self::CUBE_INDICIES,
             );
         };
-        draw_grass_block(1., vec3(6., 0., 2.), 30.);
-        draw_grass_block(1.5, vec3(0., 0., 6.), 45.);
+        draw_cube(1., vec3(6., 0., 2.), 30.);
+        draw_cube(1.5, vec3(0., 0., 6.), 45.);
 
         // Draw ground.
         {
@@ -473,7 +484,7 @@ impl Game {
                 Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
                 Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
             ];
-            let ground_indices = [0u16, 1, 2, 2, 3, 0];
+            let ground_indices = [0u32, 1, 2, 2, 3, 0];
             let material = materials::Colored {
                 fill_color: Rgb::from_hex(0x101820),
             };
@@ -484,6 +495,7 @@ impl Game {
             unsafe {
                 draw_vertices_indexed_unchecked(
                     &mut self.canvas,
+                    render_options,
                     view * model,
                     projection,
                     &material,
@@ -504,7 +516,7 @@ impl Game {
                 view.transform_vector3(vec3(t.cos(), -1., t.sin()))
                     .normalize()
             },
-            shading_intensity: 1.5,
+            shading_intensity: 1.0,
             highlightness: 0.7,
         };
         // let postprocessor = postprocessors::Basic;

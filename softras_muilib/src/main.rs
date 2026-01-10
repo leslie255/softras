@@ -120,7 +120,6 @@ struct App<'cx> {
     image_view: muilib::ImageView,
     overlay_text_view: muilib::TextView<'cx>,
     cursor_captured: bool,
-    cursor_position: Option<Vector2<f32>>,
 }
 
 impl<'cx>
@@ -164,7 +163,6 @@ impl<'cx>
             max_width: args.display_width,
             max_height: args.display_height,
             cursor_captured: false,
-            cursor_position: None,
         }
     }
 }
@@ -302,10 +300,10 @@ impl<'cx> ApplicationHandler for App<'cx> {
             } => {
                 let frame_size = self.image_view.size();
                 let window_size = self.window.inner_size();
-                self.cursor_position = Some(vec2(
+                self.game.notify_cursor_moved_to_position(
                     position.x as f32 / window_size.width as f32 * frame_size.width,
                     position.y as f32 / window_size.height as f32 * frame_size.height,
-                ));
+                );
             }
             WindowEvent::MouseWheel {
                 device_id: _,
@@ -327,7 +325,6 @@ impl<'cx> ApplicationHandler for App<'cx> {
                 self.window.request_redraw();
             }
             WindowEvent::Focused(false) => {
-                self.cursor_position = None;
                 self.game.notify_unfocused();
                 if self.cursor_captured {
                     self.capture_cursor();
@@ -340,15 +337,9 @@ impl<'cx> ApplicationHandler for App<'cx> {
     }
 
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if let DeviceEvent::MouseMotion { delta } = event
-            && let Some(cursor_position) = self.cursor_position
-        {
-            self.game.notify_cursor_moved(
-                cursor_position.x,
-                cursor_position.y,
-                delta.0 as f32,
-                delta.1 as f32,
-            );
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.game
+                .notify_cursor_moved_by_delta(delta.0 as f32, delta.1 as f32);
         }
     }
 }

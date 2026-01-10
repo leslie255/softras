@@ -1,0 +1,17 @@
+[package]
+name = "softras_winit_wgpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = "1.24.0"
+clap = { version = "4.5.54", features = ["derive"] }
+derive_more = { version = "2.1.1", features = ["full"] }
+env_logger = { version = "0.11.8", features = ["kv"] }
+log = { version = "0.4.29", features = ["kv"] }
+pollster = "0.4.0"
+softras_core = { path = "../softras_core/" }
+wgpu = "28.0.0"
+wgpu_text = "28.0.0"
+winit = "0.30.12"
+

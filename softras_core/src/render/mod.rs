@@ -12,14 +12,34 @@ pub use shader::*;
 
 use crate::*;
 
-#[derive(Clone)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RenderOptions {
+    pub cull_face: CullFaceMode,
+    pub disable_chunking: bool,
+}
+
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CullFaceMode {
+    #[default]
+    CounterClockwise,
+    Clockwise,
+    None,
+}
+
+#[derive(derive_more::Debug, Clone)]
 pub struct Canvas {
     width: u32,
     height: u32,
+    #[debug(skip)]
     frame_buffer: Vec<RgbaU8>,
+    #[debug(skip)]
     albedo_buffer: Vec<Rgba>,
+    #[debug(skip)]
     position_buffer: Vec<Vec3>,
+    #[debug(skip)]
     normal_buffer: Vec<Vec3>,
+    #[debug(skip)]
     depth_buffer: Vec<f32>,
 }
 
@@ -118,6 +138,7 @@ pub fn postprocess<P: Postprocessor + ?Sized>(canvas: &mut Canvas, postprocessor
 /// Draws a triangle to a canvas.
 pub fn draw_triangle<S: Material + ?Sized>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &S,
@@ -132,20 +153,20 @@ pub fn draw_triangle<S: Material + ?Sized>(
     #[rustfmt::skip]
     match vertices_clip.map(|vertex| vertex.position.z >= 0.) {
         // All points are in front of near plane, no near plane clipping needed.
-        [true, true, true] => after_near_clipping(canvas, model_view, vertices_clip, material),
+        [true, true, true] => after_near_clipping(canvas, options, model_view, vertices_clip, material),
 
         // All points are behind near plane.
         [false, false, false] => (),
 
         // Clip Case 1: One point is behind the near plane, the other two points are in front.
-        [false, true, true] => clip_case_1::<_, 0>(canvas, model_view, vertices_clip, material),
-        [true, false, true] => clip_case_1::<_, 1>(canvas, model_view, vertices_clip, material),
-        [true, true, false] => clip_case_1::<_, 2>(canvas, model_view, vertices_clip, material),
+        [false, true, true] => clip_case_1::<_, 0>(canvas, options, model_view, vertices_clip, material),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, options, model_view, vertices_clip, material),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, options, model_view, vertices_clip, material),
 
         // Clip Case 2: Two points are behind the near plane, the other point is in front.
-        [true, false, false] => clip_case_2::<_, 0>(canvas, model_view, vertices_clip, material),
-        [false, true, false] => clip_case_2::<_, 1>(canvas, model_view, vertices_clip, material),
-        [false, false, true] => clip_case_2::<_, 2>(canvas, model_view, vertices_clip, material),
+        [true, false, false] => clip_case_2::<_, 0>(canvas, options, model_view, vertices_clip, material),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, options, model_view, vertices_clip, material),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, options, model_view, vertices_clip, material),
     };
 }
 
@@ -153,6 +174,7 @@ pub fn draw_triangle<S: Material + ?Sized>(
 #[cold]
 fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
     material: &S,
@@ -166,8 +188,8 @@ fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
         2 => [[v0_vb, v0, v1], [v0_vb, v1, v1_vb]],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, result_vertices[0], material);
-    after_near_clipping(canvas, model_view, result_vertices[1], material);
+    after_near_clipping(canvas, options, model_view, result_vertices[0], material);
+    after_near_clipping(canvas, options, model_view, result_vertices[1], material);
 }
 
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
@@ -175,6 +197,7 @@ fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
 #[inline(never)]
 fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     vertices: [Vertex<Vec4>; 3],
     material: &S,
@@ -188,7 +211,7 @@ fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
         2 => [v0_vf, v1_vf, v2],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, model_view, positions, material);
+    after_near_clipping(canvas, options, model_view, positions, material);
 }
 
 fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Vertex<Vec4> {
@@ -203,6 +226,7 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 /// Handle the rendering from after clipping (but before perspective division).
 fn after_near_clipping<S: Material + ?Sized>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     vertices_clip: [Vertex<Vec4>; 3],
     material: &S,
@@ -210,8 +234,10 @@ fn after_near_clipping<S: Material + ?Sized>(
     let positions_div_w = vertices_clip.map(|vertex| vertex.position.xyz() / vertex.position.w);
     let positions_ndc = positions_div_w.map(|p| p.xy());
 
-    if !is_clockwise_winding(positions_ndc) {
-        return;
+    match options.cull_face {
+        CullFaceMode::CounterClockwise if !is_clockwise_winding(positions_ndc) => return,
+        CullFaceMode::Clockwise if is_clockwise_winding(positions_ndc) => return,
+        _ => (),
     }
 
     let normal_transform = model_view.inverse().transpose();
@@ -244,20 +270,21 @@ fn after_near_clipping<S: Material + ?Sized>(
     };
     let bounds_area = (x_max - x_min) * (y_max - y_min);
     let chunk_size = 32u32;
-    if chunk_size.pow(2) < bounds_area {
+    if !options.disable_chunking && chunk_size.pow(2) < bounds_area {
         // Chunking case.
         // (Chunking is basically only an optimization measure for dealing with triangles that
         // occupy big screen spaces, so if you are checking out the code base just to understand
         // the workings of rasterization process, simply assume the other no chunking path).
-        rasterize_chunked(canvas, vertices_ndc, material, bounds, chunk_size);
+        rasterize_chunked(canvas, options, vertices_ndc, material, bounds, chunk_size);
     } else {
         // No chunking case.
-        rasterize(canvas, vertices_ndc, material, bounds);
+        rasterize(canvas, options, vertices_ndc, material, bounds);
     }
 }
 
 fn rasterize<M: Material + ?Sized>(
     canvas: &mut Canvas,
+    _options: RenderOptions,
     vertices_ndc: [VertexNdc; 3],
     material: &M,
     [x_min, x_max, y_min, y_max]: [u32; 4],
@@ -284,17 +311,16 @@ fn rasterize<M: Material + ?Sized>(
                 pixel_to_ndc_x(x_pixel, canvas.width),
                 pixel_to_ndc_y(y_pixel, canvas.height),
             );
-            let weights = barycentric_weights(positions_ndc, p_ndc);
-            if weights.iter().any(|&weight| weight < 0.) {
+            let Some(weights) = barycentric_weights(positions_ndc, p_ndc) else {
                 continue;
-            }
-            let depth = triangular_interpolate(weights, depths);
+            };
+            let depth = terp(weights, depths);
             if *depth_sample <= depth {
                 continue;
             }
-            let w = 1. / triangular_interpolate(weights, w_invs);
-            let uv = w * triangular_interpolate_vec2(weights, uvs_div_w);
-            let normal = triangular_interpolate_vec3(weights, normals);
+            let w = 1. / terp(weights, w_invs);
+            let uv = w * terp_vec2(weights, uvs_div_w);
+            let normal = terp_vec3(weights, normals);
             let fragment_input = FragmentInput {
                 position: w * vec3(p_ndc.x, p_ndc.y, depth),
                 depth,
@@ -313,6 +339,7 @@ fn rasterize<M: Material + ?Sized>(
 
 fn rasterize_chunked<M: Material + ?Sized>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     vertices_ndc: [VertexNdc; 3],
     material: &M,
     [x_min, x_max, y_min, y_max]: [u32; 4],
@@ -330,7 +357,7 @@ fn rasterize_chunked<M: Material + ?Sized>(
             let y_max_ = (y_min_ + chunk_size).min(canvas.height - 1);
             let bounds_chunk = [x_min_, x_max_, y_min_, y_max_];
             if rect_triangle_overlap(positions_pixel, bounds_chunk.map(|u| u as f32)) {
-                rasterize(canvas, vertices_ndc, material, bounds_chunk);
+                rasterize(canvas, options, vertices_ndc, material, bounds_chunk);
             }
         }
     }
@@ -397,25 +424,28 @@ fn line_rect_intersects(p0: Vec2, p1: Vec2, [x_min, x_max, y_min, y_max]: [f32; 
 }
 
 fn point_in_triangle([a, b, c]: [Vec2; 3], p: Vec2) -> bool {
-    barycentric_weights_inside([a, b, c], p).is_some()
+    barycentric_weights([a, b, c], p).is_some()
 }
 
-fn triangular_interpolate([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
+/// Triangular interpolation.
+fn terp([w0, w1, w2]: [f32; 3], [x0, x1, x2]: [f32; 3]) -> f32 {
     w0 * x0 + w1 * x1 + w2 * x2
 }
 
-fn triangular_interpolate_vec2(weights: [f32; 3], [v0, v1, v2]: [Vec2; 3]) -> Vec2 {
+/// Triangular interpolation.
+fn terp_vec2(weights: [f32; 3], [v0, v1, v2]: [Vec2; 3]) -> Vec2 {
     vec2(
-        triangular_interpolate(weights, [v0.x, v1.x, v2.x]),
-        triangular_interpolate(weights, [v0.y, v1.y, v2.y]),
+        terp(weights, [v0.x, v1.x, v2.x]),
+        terp(weights, [v0.y, v1.y, v2.y]),
     )
 }
 
-fn triangular_interpolate_vec3(weights: [f32; 3], [v0, v1, v2]: [Vec3; 3]) -> Vec3 {
+/// Triangular interpolation.
+fn terp_vec3(weights: [f32; 3], [v0, v1, v2]: [Vec3; 3]) -> Vec3 {
     vec3(
-        triangular_interpolate(weights, [v0.x, v1.x, v2.x]),
-        triangular_interpolate(weights, [v0.y, v1.y, v2.y]),
-        triangular_interpolate(weights, [v0.z, v1.z, v2.z]),
+        terp(weights, [v0.x, v1.x, v2.x]),
+        terp(weights, [v0.y, v1.y, v2.y]),
+        terp(weights, [v0.z, v1.z, v2.z]),
     )
 }
 
@@ -448,27 +478,23 @@ fn is_clockwise_winding([a, b, c]: [Vec2; 3]) -> bool {
     signed_area(a, b, c) >= 0.
 }
 
-fn barycentric_weights([a, b, c]: [Vec2; 3], p: Vec2) -> [f32; 3] {
+/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
+/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
+fn barycentric_weights([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
+    let [a, b, c] = [a, b, c];
     fn signed_area(a: Vec2, b: Vec2, c: Vec2) -> f32 {
         0.5 * (c - a).dot((b - a).perp())
     }
     let area_bcp = signed_area(b, c, p);
     let area_cap = signed_area(c, a, p);
     let area_abp = signed_area(a, b, p);
-    let area_total = area_bcp + area_cap + area_abp;
-    [
-        (1. / area_total) * area_bcp,
-        (1. / area_total) * area_cap,
-        (1. / area_total) * area_abp,
-    ]
-}
-
-/// If point `p` is inside the triangle formed by XP components of points `a`, `b`, and `c`,
-/// returns the weights of `a`, `b`, and `c` for triangular-interpolation.
-fn barycentric_weights_inside([a, b, c]: [Vec2; 3], p: Vec2) -> Option<[f32; 3]> {
-    let weights @ [w_a, w_b, w_c] = barycentric_weights([a, b, c], p);
-    if (w_a > 0.) == (w_b > 0.) && (w_b > 0.) == (w_c > 0.) {
-        Some(weights)
+    if (area_bcp > 0.) == (area_cap > 0.) && (area_cap > 0.) == (area_abp > 0.) {
+        let area_total = area_bcp + area_cap + area_abp;
+        Some([
+            (1. / area_total) * area_bcp,
+            (1. / area_total) * area_cap,
+            (1. / area_total) * area_abp,
+        ])
     } else {
         None
     }
@@ -606,6 +632,7 @@ impl<T: Into<Vertex> + Copy> IntoVertex for T {
 #[allow(dead_code)]
 pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
@@ -613,52 +640,56 @@ pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
 ) {
     for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, material, vertices);
+        draw_triangle(canvas, options, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
 pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
-    indices: &[u16],
+    indices: &[u32],
 ) {
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| vertices[i as usize]);
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, material, vertices);
+        draw_triangle(canvas, options, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
 pub unsafe fn draw_vertices_indexed_unchecked<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
-    indices: &[u16],
+    indices: &[u32],
 ) {
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i as usize) });
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, model_view, projection, material, vertices);
+        draw_triangle(canvas, options, model_view, projection, material, vertices);
     }
 }
 
 #[allow(dead_code)]
 pub fn draw_object<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
-    object: &Obj<V>,
+    object: &Obj<V, u32>,
 ) {
     draw_vertices_indexed(
         canvas,
+        options,
         model_view,
         projection,
         material,
@@ -670,14 +701,16 @@ pub fn draw_object<M: Material + ?Sized, V: IntoVertex>(
 #[allow(dead_code)]
 pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
+    options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
-    object: &Obj<V>,
+    object: &Obj<V, u32>,
 ) {
     unsafe {
         draw_vertices_indexed_unchecked(
             canvas,
+            options,
             model_view,
             projection,
             material,
