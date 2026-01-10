@@ -19,7 +19,7 @@ To build and run:
 $ cargo run --release --package softras_winit_wgpu
 ```
 
-This command has to be executed at the root of the project directory, as the program needs access to the `assets.respack.bin` file for game assets. Alternatively, you may provide the asset file path with the `--res` argument. For more information, see `cargo run --release --package softras_wgpu_winit --help`.
+This command has to be executed at the root of the project directory, as the program needs access to the `assets.respack.bin` file for game assets. Alternatively, you may provide the asset file path with the `--res` argument. For more information, see `cargo run --release --package softras_winit_wgpu -- --help`.
 
 ## Q: But why is there WGSL code?
 
