@@ -2,7 +2,7 @@
 
 mod key_code;
 
-use std::{fmt::Write as _, fs, path::Path, process::exit, sync::Arc};
+use std::{borrow::Cow, env, fmt::Write as _, fs, path::Path, process::exit, sync::Arc};
 
 use clap::Parser as _;
 use clipboard::ClipboardProvider;
@@ -30,6 +30,11 @@ enum ProgramSubcommand {
     PackRes(SubcommandPackResArgs),
 }
 
+const DEFAULT_RES_PATH: &str = match option_env!("SOFTRAS_DEFAULT_ASSET_PATH") {
+    Some(path) => path,
+    None => "assets.respack.bin",
+};
+
 #[derive(Debug, Clone, clap::Parser)]
 struct SubcommandRunArgs {
     /// Preferred display width.
@@ -39,7 +44,7 @@ struct SubcommandRunArgs {
     #[clap(short = 'H', long, default_value_t = 600)]
     display_height: u32,
     /// The game's respack file.
-    #[clap(short = 'r', long = "res", default_value_t = String::from("assets.respack.bin"))]
+    #[clap(short = 'r', long = "res", default_value_t = String::from(DEFAULT_RES_PATH))]
     respack: String,
 }
 
@@ -117,23 +122,36 @@ struct WindowState {
     init_error_message: String,
 }
 
+/// If path is not a file relative to current pwd, tries to find in the executable file's directory.
+///
+/// Yeah I'm looking at you macOS, why does launching an executable in GUI launch it in `$HOME`???
+///
+/// If cannot find anything, returns `path` back. Caller would try to `fs::read` and likely fail,
+/// ultimately results in a `io::Error`.
+fn solve_respack_path(path: &Path) -> Cow<'_, Path> {
+    if fs::metadata(path).is_ok_and(|md| md.is_file() || md.is_symlink()) {
+        return Cow::Borrowed(path);
+    } else if let Ok(exe_path) = std::env::current_exe()
+        && let Some(parent_dir) = exe_path.parent()
+    {
+        let joined_path = parent_dir.join(path);
+        if fs::metadata(&joined_path).is_ok_and(|md| md.is_file() || md.is_symlink()) {
+            return Cow::Owned(joined_path);
+        }
+    }
+    Cow::Borrowed(path)
+}
+
 fn init_game(args: &SubcommandRunArgs) -> Result<softras_core::Game, String> {
-    let respack_path: &Path = args.respack.as_ref();
-    let respack_bytes = match fs::read(respack_path) {
+    let respack_path = solve_respack_path(args.respack.as_ref());
+    log::info!("using respack path: {}", respack_path.display());
+    let respack_bytes = match fs::read(&respack_path) {
         Ok(respack_bytes) => respack_bytes,
         Err(error) => {
-            if let Ok(pwd) = std::env::current_dir() {
-                return Err(format!(
-                    "error reading assets file {}: {error} (pwd: {})",
-                    respack_path.display(),
-                    pwd.display(),
-                ));
-            } else {
-                return Err(format!(
-                    "error reading assets file {}: {error}",
-                    respack_path.display()
-                ));
-            }
+            return Err(format!(
+                "error reading assets file {}: {error}",
+                respack_path.display()
+            ));
         }
     };
     softras_core::Game::new(respack_bytes).map_err(|error| error.to_string())
@@ -146,7 +164,7 @@ impl WindowState {
                 .create_window(
                     Window::default_attributes()
                         .with_title("Software Rasterizer")
-                        .with_inner_size(LogicalSize::new(800, 600)),
+                        .with_inner_size(LogicalSize::new(args.display_width, args.display_height)),
                 )
                 .unwrap(),
         );
@@ -255,7 +273,9 @@ impl WindowState {
                 break 'block String::new();
             }
             let mut s = String::new();
+            use std::env::consts::*;
             writeln!(&mut s, "{init_error}");
+            writeln!(&mut s, "arch: {ARCH}, OS: {OS}, family: {FAMILY}");
             writeln!(
                 &mut s,
                 "{} version: {}",
@@ -268,6 +288,11 @@ impl WindowState {
                 env!("CARGO_CRATE_NAME"),
                 env!("CARGO_PKG_VERSION"),
             );
+            writeln!(&mut s, "args: {:?}", Vec::from_iter(env::args()));
+            match env::current_dir() {
+                Ok(pwd) => writeln!(&mut s, "pwd: {}", pwd.display()),
+                Err(error) => writeln!(&mut s, "pwd unknown: {error}"),
+            };
             s
         };
 
@@ -353,7 +378,7 @@ impl WindowState {
         let overlay_text = move |s| {
             glyph_brush::Text::new(s)
                 .with_color([1., 1., 1., 1.])
-                .with_scale(17. * scale_factor)
+                .with_scale(19. * scale_factor)
         };
 
         let window_size = self.window.inner_size();
