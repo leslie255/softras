@@ -32,13 +32,13 @@ pub mod materials {
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Colored {
         /// The default value is `Rgb::from_hex(0xFF00FF)`.
-        pub fill_color: Rgb,
+        pub color: Rgb,
     }
 
     impl Default for Colored {
         fn default() -> Self {
             Self {
-                fill_color: Rgb::from_hex(0xFFFFFF),
+                color: Rgb::from_hex(0xFFFFFF),
             }
         }
     }
@@ -46,7 +46,7 @@ pub mod materials {
     impl Material for Colored {
         fn fragment(&self, input: FragmentInput) -> FragmentOutput {
             FragmentOutput {
-                albedo: self.fill_color.into(),
+                albedo: self.color.into(),
                 normal: input.normal,
             }
         }

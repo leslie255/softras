@@ -22,9 +22,9 @@ pub struct RenderOptions {
 #[allow(dead_code)]
 pub enum CullFaceMode {
     #[default]
-    CounterClockwise,
-    Clockwise,
-    None,
+    CullCounterClockwise,
+    CullClockwise,
+    NoCulling,
 }
 
 #[derive(derive_more::Debug, Clone)]
@@ -235,8 +235,8 @@ fn after_near_clipping<S: Material + ?Sized>(
     let positions_ndc = positions_div_w.map(|p| p.xy());
 
     match options.cull_face {
-        CullFaceMode::CounterClockwise if !is_clockwise_winding(positions_ndc) => return,
-        CullFaceMode::Clockwise if is_clockwise_winding(positions_ndc) => return,
+        CullFaceMode::CullCounterClockwise if !is_clockwise_winding(positions_ndc) => return,
+        CullFaceMode::CullClockwise if is_clockwise_winding(positions_ndc) => return,
         _ => (),
     }
 

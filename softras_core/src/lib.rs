@@ -21,6 +21,9 @@ use render::*;
 use respack::*;
 use utils::*;
 
+pub const CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
+pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Packs the needed resources from the directory located in `softras/res` into a one respack file.
 ///
 /// # Arguments
@@ -341,7 +344,7 @@ impl Game {
         }
 
         // Name and version.
-        let crate_version = env!("CARGO_PKG_VERSION");
+        let crate_version = self::CRATE_VERSION;
         if cfg!(debug_assertions) {
             _ = writeln!(
                 &mut self.overlay_text,
@@ -408,13 +411,13 @@ impl Game {
             .projection_matrix(self.canvas.width() as f32, self.canvas.height() as f32);
 
         let render_options = RenderOptions {
-            cull_face: CullFaceMode::CounterClockwise,
+            cull_face: CullFaceMode::CullCounterClockwise,
             disable_chunking: false,
         };
 
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::Colored { fill_color: color };
+                let material = materials::Colored { color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_radians());
@@ -435,7 +438,7 @@ impl Game {
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::Colored { fill_color: color };
+                let material = materials::Colored { color };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_radians());
@@ -486,7 +489,7 @@ impl Game {
             ];
             let ground_indices = [0u32, 1, 2, 2, 3, 0];
             let material = materials::Colored {
-                fill_color: Rgb::from_hex(0x101820),
+                color: Rgb::from_hex(0x101820),
             };
             let size = 100.0f32;
             let height = 0.1f32;

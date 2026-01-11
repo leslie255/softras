@@ -5,6 +5,7 @@ mod key_code;
 use std::{fmt::Write as _, fs, path::Path, process::exit, sync::Arc};
 
 use clap::Parser as _;
+use clipboard::ClipboardProvider;
 use pollster::FutureExt;
 use wgpu::util::DeviceExt as _;
 use wgpu_text::glyph_brush::{self, ab_glyph::FontRef};
@@ -13,7 +14,7 @@ use winit::{
     dpi::LogicalSize,
     event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
-    keyboard::PhysicalKey,
+    keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
 
@@ -91,7 +92,7 @@ fn subcommand_run(args: SubcommandRunArgs) {
     event_loop.run_app(&mut app).unwrap();
 }
 
-static SPACE_MONO_REGULAR_TTF: &[u8] = include_bytes!("../SpaceMono-Regular.ttf");
+static IOSEVKA_CUSTOM_REGULAR_TTF: &[u8] = include_bytes!("../IosevkaCustom-Regular.ttf");
 
 struct WindowState {
     window: Arc<Window>,
@@ -105,6 +106,7 @@ struct WindowState {
     render_pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    clipboard_context: clipboard::ClipboardContext,
     max_width: u32,
     max_height: u32,
     game_display_size: (u32, u32),
@@ -113,6 +115,28 @@ struct WindowState {
     /// If initialization failed, this message would be displayed in the window and the game frame
     /// would not be drawn.
     init_error_message: String,
+}
+
+fn init_game(args: &SubcommandRunArgs) -> Result<softras_core::Game, String> {
+    let respack_path: &Path = args.respack.as_ref();
+    let respack_bytes = match fs::read(respack_path) {
+        Ok(respack_bytes) => respack_bytes,
+        Err(error) => {
+            if let Ok(pwd) = std::env::current_dir() {
+                return Err(format!(
+                    "error reading assets file {}: {error} (pwd: {})",
+                    respack_path.display(),
+                    pwd.display(),
+                ));
+            } else {
+                return Err(format!(
+                    "error reading assets file {}: {error}",
+                    respack_path.display()
+                ));
+            }
+        }
+    };
+    softras_core::Game::new(respack_bytes).map_err(|error| error.to_string())
 }
 
 impl WindowState {
@@ -128,36 +152,13 @@ impl WindowState {
         );
         let window_size = window.inner_size();
 
-        let mut init_error_message = String::new();
-
-        let game: Option<softras_core::Game> = 'block: {
-            let respack_path: &Path = args.respack.as_ref();
-            let respack_bytes = match fs::read(respack_path) {
-                Ok(respack_bytes) => respack_bytes,
-                Err(error) => {
-                    log::error!(
-                        "error reading assets file {}: {error}",
-                        respack_path.display()
-                    );
-                    init_error_message = format!(
-                        "error reading assets file {}: {error}",
-                        respack_path.display(),
-                    );
-                    if let Ok(pwd) = std::env::current_dir() {
-                        write!(&mut init_error_message, "\npwd: {}", pwd.display()).unwrap();
-                    }
-                    break 'block None;
-                }
-            };
-            match softras_core::Game::new(respack_bytes) {
-                Ok(game) => Some(game),
-                Err(error) => {
-                    log::error!("error initializing game: {error}");
-                    init_error_message = format!("error initializing game: {error}");
-                    None
-                }
-            }
+        let (game, init_error) = match init_game(args) {
+            Ok(game) => (Some(game), String::new()),
+            Err(init_error_message) => (None, init_error_message),
         };
+        if !init_error.is_empty() {
+            log::error!("{init_error}");
+        }
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let adapter = instance
@@ -239,7 +240,7 @@ impl WindowState {
             cache: None,
         });
 
-        let text_brush = wgpu_text::BrushBuilder::using_font_bytes(SPACE_MONO_REGULAR_TTF)
+        let text_brush = wgpu_text::BrushBuilder::using_font_bytes(IOSEVKA_CUSTOM_REGULAR_TTF)
             .unwrap()
             .build(
                 &device,
@@ -247,6 +248,28 @@ impl WindowState {
                 window_size.width,
                 surface_format,
             );
+
+        #[allow(unused_must_use)]
+        let init_error_message = 'block: {
+            if init_error.is_empty() {
+                break 'block String::new();
+            }
+            let mut s = String::new();
+            writeln!(&mut s, "{init_error}");
+            writeln!(
+                &mut s,
+                "{} version: {}",
+                softras_core::CRATE_NAME,
+                softras_core::CRATE_VERSION,
+            );
+            writeln!(
+                &mut s,
+                "{} version: {}",
+                env!("CARGO_CRATE_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            );
+            s
+        };
 
         let self_ = WindowState {
             window,
@@ -258,6 +281,7 @@ impl WindowState {
             render_pipeline,
             bind_group_layout,
             sampler,
+            clipboard_context: clipboard::ClipboardProvider::new().unwrap(),
             game_display_size: (window_size.width, window_size.height),
             max_width: args.display_width,
             max_height: args.display_height,
@@ -325,17 +349,26 @@ impl WindowState {
             &self.queue,
         );
 
-        let overlay_text: &str = match frame_output {
-            Some(frame_output) => frame_output.overlay_text,
-            None => &self.init_error_message,
+        let scale_factor = self.window.scale_factor() as f32;
+        let overlay_text = move |s| {
+            glyph_brush::Text::new(s)
+                .with_color([1., 1., 1., 1.])
+                .with_scale(17. * scale_factor)
         };
-        let text_section = glyph_brush::Section::default()
+
+        let window_size = self.window.inner_size();
+        let window_width = window_size.width as f32;
+        let window_height = window_size.height as f32;
+        let mut text_section = glyph_brush::Section::default()
             .with_screen_position((8., 8.))
-            .add_text(
-                glyph_brush::Text::new(overlay_text)
-                    .with_color([1., 1., 1., 1.])
-                    .with_scale(17. * self.window.scale_factor() as f32),
-            );
+            .with_bounds((window_width - 16., window_height - 16.));
+        if frame_output.is_none() && !self.init_error_message.is_empty() {
+            text_section = text_section.add_text(overlay_text(&self.init_error_message));
+            text_section =
+                text_section.add_text(overlay_text("Press F9 to copy this error message"));
+        } else if let Some(frame_output) = frame_output {
+            text_section = text_section.add_text(overlay_text(frame_output.overlay_text));
+        }
         self.text_brush
             .queue(&self.device, &self.queue, &[text_section])
             .unwrap();
@@ -350,6 +383,17 @@ impl WindowState {
             }
         }
 
+        let clear_color = if self.init_error_message.is_empty() {
+            wgpu::Color::BLACK
+        } else {
+            wgpu::Color {
+                r: srgb_to_linear(0.957),
+                g: srgb_to_linear(0.350),
+                b: srgb_to_linear(0.358),
+                a: 1.,
+            }
+        };
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -360,12 +404,7 @@ impl WindowState {
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.,
-                        g: 0.21586050011389926,
-                        b: 0.21586050011389926,
-                        a: 1.,
-                    }),
+                    load: wgpu::LoadOp::Clear(clear_color),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -435,11 +474,18 @@ impl WindowState {
         })
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if id != self.window.id() {
+            return;
+        }
         match event {
             WindowEvent::RedrawRequested => {
                 self.draw_frame();
-                self.window.request_redraw();
+                if self.game.is_some() {
+                    self.window.request_redraw();
+                } else {
+                    // We're just displaying an error message rn, no need for continuous redraw.
+                }
             }
             WindowEvent::Resized(size) => {
                 self.configure_surface();
@@ -466,6 +512,21 @@ impl WindowState {
                 event,
                 is_synthetic: false,
             } => {
+                if let PhysicalKey::Code(KeyCode::F9) = event.physical_key
+                    && event.state.is_pressed()
+                    && !event.repeat
+                    && !self.init_error_message.is_empty()
+                {
+                    match self
+                        .clipboard_context
+                        .set_contents(self.init_error_message.clone())
+                    {
+                        Ok(()) => log::info!("copied error message to clipboard"),
+                        Err(error) => {
+                            log::error!("unable to copy error message to clipboard: {error}")
+                        }
+                    }
+                }
                 if let Some(game) = self.game.as_mut() {
                     let key_code = match event.physical_key {
                         PhysicalKey::Code(key_code_winit) => {
@@ -620,5 +681,13 @@ impl ApplicationHandler for App {
         if let Some(state) = self.state.as_mut() {
             state.device_event(event_loop, device_id, event);
         }
+    }
+}
+
+fn srgb_to_linear(srgb: f64) -> f64 {
+    if srgb <= 0.04045 {
+        srgb / 12.92
+    } else {
+        ((srgb + 0.055) / 1.055).powf(2.4)
     }
 }
