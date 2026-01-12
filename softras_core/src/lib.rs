@@ -98,8 +98,8 @@ pub struct Game {
     previous_frame_instant: Option<Instant>,
     is_paused: bool,
     camera: Camera,
-    teapot: Obj<obj::Position, u32>,
-    suzanne: Obj<obj::TexturedVertex, u32>,
+    teapot: Obj<obj::Position>,
+    suzanne: Obj<obj::TexturedVertex>,
     test_cube_image: image::RgbaImage,
 }
 
@@ -302,7 +302,7 @@ impl Game {
     };
 
     #[rustfmt::skip]
-    const CUBE_INDICIES: [u32; 36] = [
+    const CUBE_INDICIES: [u16; 36] = [
         /* South */ 0, 1, 2, 2, 3, 0,
         /* North */ 4, 5, 6, 6, 7, 4,
         /* East  */ 8, 9, 10, 10, 11, 8,
@@ -487,7 +487,7 @@ impl Game {
                 Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
                 Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
             ];
-            let ground_indices = [0u32, 1, 2, 2, 3, 0];
+            let ground_indices = [0u16, 1, 2, 2, 3, 0];
             let material = materials::Colored {
                 color: Rgb::from_hex(0x101820),
             };

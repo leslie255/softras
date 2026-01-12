@@ -18,12 +18,18 @@ pub struct RenderOptions {
     pub disable_chunking: bool,
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+/// Option for culling triangles according to their winding direction.
+/// 3D models are conventionally clockwise-winded, therefore the default value of this `enum` is
+/// `CullCCW`. #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum CullFaceMode {
+    /// Cull counter-clockwise triangles (the default).
     #[default]
     CullCounterClockwise,
+    /// Cull clockwise triangles (the default).
     CullClockwise,
+    /// No face culling based on winding directions.
     NoCulling,
 }
 
@@ -136,16 +142,21 @@ pub fn postprocess<P: Postprocessor + ?Sized>(canvas: &mut Canvas, postprocessor
 }
 
 /// Draws a triangle to a canvas.
+///
+/// * `canvas`           - the canvas to draw on
+/// * `options`          - the render options
+/// * `mvp`              - the model-view-projection matrix, equals to projection * view * model
+/// * `normal_transform` - the matrix for transforming normals, equals to `transpose(inverse(view *
+///   model))`
+/// * `vertices`         - the vertices of the triangle
 pub fn draw_triangle<S: Material + ?Sized>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
-    projection: Mat4,
+    mvp: Mat4,
     normal_transform: Mat4,
     material: &S,
     vertices: [Vertex; 3],
 ) {
-    let mvp = projection * model_view;
     let vertices_clip: [Vertex<Vec4>; 3] = vertices.map(|vertex| {
         let position = mvp * vertex.position.extend(1.);
         vertex.with_position(position)
@@ -561,11 +572,11 @@ impl Camera {
 
 /// A vertex in NDC space.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VertexNdc {
-    pub position_div_w: Vec3,
-    pub w_inv: f32,
-    pub uv_div_w: Vec2,
-    pub normal: Vec3,
+struct VertexNdc {
+    position_div_w: Vec3,
+    w_inv: f32,
+    uv_div_w: Vec2,
+    normal: Vec3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -642,6 +653,30 @@ impl<T: Into<Vertex> + Copy> IntoVertex for T {
 }
 
 #[allow(dead_code)]
+pub trait ObjectIndex: Copy {
+    fn to_usize(self) -> usize;
+    fn from_usize(u: usize) -> Option<Self>;
+}
+
+impl ObjectIndex for u16 {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    fn from_usize(u: usize) -> Option<Self> {
+        Self::try_from(u).ok()
+    }
+}
+
+impl ObjectIndex for u32 {
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    fn from_usize(u: usize) -> Option<Self> {
+        Self::try_from(u).ok()
+    }
+}
+
+#[allow(dead_code)]
 pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
     canvas: &mut Canvas,
     options: RenderOptions,
@@ -650,81 +685,64 @@ pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
     material: &M,
     vertices: &[V],
 ) {
+    let mvp = projection * model_view;
     let normal_transform = model_view.inverse().transpose();
     for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(
-            canvas,
-            options,
-            model_view,
-            projection,
-            normal_transform,
-            material,
-            vertices,
-        );
+        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex>(
+pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
-    indices: &[u32],
+    indices: &[I],
 ) {
+    let mvp = projection * model_view;
     let normal_transform = model_view.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
-        let vertices_raw = indices.map(|i| vertices[i as usize]);
+        let vertices_raw = indices.map(|i| vertices[i.to_usize()]);
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(
-            canvas,
-            options,
-            model_view,
-            projection,
-            normal_transform,
-            material,
-            vertices,
-        );
+        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_vertices_indexed_unchecked<M: Material + ?Sized, V: IntoVertex>(
+pub unsafe fn draw_vertices_indexed_unchecked<
+    M: Material + ?Sized,
+    V: IntoVertex,
+    I: ObjectIndex,
+>(
     canvas: &mut Canvas,
     options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
-    indices: &[u32],
+    indices: &[I],
 ) {
+    let mvp = projection * model_view;
     let normal_transform = model_view.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
-        let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i as usize) });
+        let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i.to_usize()) });
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(
-            canvas,
-            options,
-            model_view,
-            projection,
-            normal_transform,
-            material,
-            vertices,
-        );
+        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_object<M: Material + ?Sized, V: IntoVertex>(
+pub fn draw_object<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
-    object: &Obj<V, u32>,
+    object: &Obj<V, I>,
 ) {
     draw_vertices_indexed(
         canvas,
@@ -738,13 +756,13 @@ pub fn draw_object<M: Material + ?Sized, V: IntoVertex>(
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex>(
+pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
     material: &M,
-    object: &Obj<V, u32>,
+    object: &Obj<V, I>,
 ) {
     unsafe {
         draw_vertices_indexed_unchecked(
