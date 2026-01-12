@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["softras_core", "softras_muilib", "softras_winit_wgpu"]
+members = ["softras_core", "softras_muilib", "softras_term", "softras_winit_wgpu"]
