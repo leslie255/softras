@@ -2,8 +2,8 @@
 
 set -xe
 
-SOFTRAS_DEFAULT_ASSET_PATH="../Resources/assets.respack.bin" cargo build --release --package softras_winit_wgpu --target x86_64-apple-darwin
-SOFTRAS_DEFAULT_ASSET_PATH="../Resources/assets.respack.bin" cargo build --release --package softras_winit_wgpu --target aarch64-apple-darwin
+SOFTRAS_DEFAULT_ASSET_PATH="../Resources/assets.respack.bin" cargo build --quiet --release --package softras_winit_wgpu --target x86_64-apple-darwin
+SOFTRAS_DEFAULT_ASSET_PATH="../Resources/assets.respack.bin" cargo build --quiet --release --package softras_winit_wgpu --target aarch64-apple-darwin
 
 mkdir -p "target/Software Rasterizer.app/Contents/"
 mkdir -p "target/Software Rasterizer.app/Contents/MacOS/"

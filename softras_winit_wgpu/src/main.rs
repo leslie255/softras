@@ -41,7 +41,7 @@ struct SubcommandRunArgs {
     #[clap(short = 'W', long, default_value_t = 800)]
     display_width: u32,
     /// Preferred display height.
-    #[clap(short = 'H', long, default_value_t = 600)]
+    #[clap(short = 'H', long, default_value_t = 500)]
     display_height: u32,
     /// The game's respack file.
     #[clap(short = 'r', long = "res", default_value_t = String::from(DEFAULT_RES_PATH))]

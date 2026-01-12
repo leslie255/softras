@@ -141,6 +141,7 @@ pub fn draw_triangle<S: Material + ?Sized>(
     options: RenderOptions,
     model_view: Mat4,
     projection: Mat4,
+    normal_transform: Mat4,
     material: &S,
     vertices: [Vertex; 3],
 ) {
@@ -153,20 +154,20 @@ pub fn draw_triangle<S: Material + ?Sized>(
     #[rustfmt::skip]
     match vertices_clip.map(|vertex| vertex.position.z >= 0.) {
         // All points are in front of near plane, no near plane clipping needed.
-        [true, true, true] => after_near_clipping(canvas, options, model_view, vertices_clip, material),
+        [true, true, true] => after_near_clipping(canvas, options, normal_transform, vertices_clip, material),
 
         // All points are behind near plane.
         [false, false, false] => (),
 
         // Clip Case 1: One point is behind the near plane, the other two points are in front.
-        [false, true, true] => clip_case_1::<_, 0>(canvas, options, model_view, vertices_clip, material),
-        [true, false, true] => clip_case_1::<_, 1>(canvas, options, model_view, vertices_clip, material),
-        [true, true, false] => clip_case_1::<_, 2>(canvas, options, model_view, vertices_clip, material),
+        [false, true, true] => clip_case_1::<_, 0>(canvas, options, normal_transform, vertices_clip, material),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, options, normal_transform, vertices_clip, material),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, options, normal_transform, vertices_clip, material),
 
         // Clip Case 2: Two points are behind the near plane, the other point is in front.
-        [true, false, false] => clip_case_2::<_, 0>(canvas, options, model_view, vertices_clip, material),
-        [false, true, false] => clip_case_2::<_, 1>(canvas, options, model_view, vertices_clip, material),
-        [false, false, true] => clip_case_2::<_, 2>(canvas, options, model_view, vertices_clip, material),
+        [true, false, false] => clip_case_2::<_, 0>(canvas, options, normal_transform, vertices_clip, material),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, options, normal_transform, vertices_clip, material),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, options, normal_transform, vertices_clip, material),
     };
 }
 
@@ -175,7 +176,7 @@ pub fn draw_triangle<S: Material + ?Sized>(
 fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    normal_transform: Mat4,
     vertices: [Vertex<Vec4>; 3],
     material: &S,
 ) {
@@ -188,8 +189,20 @@ fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
         2 => [[v0_vb, v0, v1], [v0_vb, v1, v1_vb]],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, options, model_view, result_vertices[0], material);
-    after_near_clipping(canvas, options, model_view, result_vertices[1], material);
+    after_near_clipping(
+        canvas,
+        options,
+        normal_transform,
+        result_vertices[0],
+        material,
+    );
+    after_near_clipping(
+        canvas,
+        options,
+        normal_transform,
+        result_vertices[1],
+        material,
+    );
 }
 
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
@@ -198,7 +211,7 @@ fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
 fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    normal_transform: Mat4,
     vertices: [Vertex<Vec4>; 3],
     material: &S,
 ) {
@@ -211,7 +224,7 @@ fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
         2 => [v0_vf, v1_vf, v2],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, options, model_view, positions, material);
+    after_near_clipping(canvas, options, normal_transform, positions, material);
 }
 
 fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Vertex<Vec4> {
@@ -227,7 +240,7 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 fn after_near_clipping<S: Material + ?Sized>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    normal_transform: Mat4,
     vertices_clip: [Vertex<Vec4>; 3],
     material: &S,
 ) {
@@ -240,7 +253,6 @@ fn after_near_clipping<S: Material + ?Sized>(
         _ => (),
     }
 
-    let normal_transform = model_view.inverse().transpose();
     let vertices_ndc: [VertexNdc; 3] = array::from_fn(|i| {
         let vertex_clip = vertices_clip[i];
         let w = vertex_clip.position.w;
@@ -638,9 +650,18 @@ pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
     material: &M,
     vertices: &[V],
 ) {
+    let normal_transform = model_view.inverse().transpose();
     for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, model_view, projection, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            model_view,
+            projection,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
@@ -654,10 +675,19 @@ pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex>(
     vertices: &[V],
     indices: &[u32],
 ) {
+    let normal_transform = model_view.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| vertices[i as usize]);
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, model_view, projection, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            model_view,
+            projection,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
@@ -671,10 +701,19 @@ pub unsafe fn draw_vertices_indexed_unchecked<M: Material + ?Sized, V: IntoVerte
     vertices: &[V],
     indices: &[u32],
 ) {
+    let normal_transform = model_view.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i as usize) });
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, model_view, projection, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            model_view,
+            projection,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
