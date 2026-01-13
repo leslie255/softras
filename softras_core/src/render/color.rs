@@ -1,3 +1,5 @@
+use std::ops::{Add, Mul};
+
 use bytemuck::{Pod, Zeroable};
 use glam::*;
 
@@ -177,6 +179,39 @@ impl Rgb {
             r: f32::lerp(self.r, other.r, t),
             g: f32::lerp(self.g, other.g, t),
             b: f32::lerp(self.b, other.b, t),
+        }
+    }
+}
+
+impl Add for Rgb {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            r: self.r + rhs.r,
+            g: self.g + rhs.g,
+            b: self.b + rhs.b,
+        }
+    }
+}
+
+impl Mul<Rgb> for f32 {
+    type Output = Rgb;
+    fn mul(self, rhs: Rgb) -> Self::Output {
+        Rgb {
+            r: self * rhs.r,
+            g: self * rhs.g,
+            b: self * rhs.b,
+        }
+    }
+}
+
+impl Mul<f32> for Rgb {
+    type Output = Rgb;
+    fn mul(self, rhs: f32) -> Self::Output {
+        Rgb {
+            r: rhs * self.r,
+            g: rhs * self.g,
+            b: rhs * self.b,
         }
     }
 }

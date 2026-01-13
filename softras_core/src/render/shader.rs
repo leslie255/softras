@@ -20,7 +20,8 @@ pub struct FragmentInput {
 #[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
 #[repr(C)]
 pub struct FragmentOutput {
-    pub albedo: Rgba,
+    pub albedo: Rgb,
+    pub specular: f32,
     pub normal: Vec3,
 }
 
@@ -33,12 +34,14 @@ pub mod materials {
     pub struct Colored {
         /// The default value is `Rgb::from_hex(0xFF00FF)`.
         pub color: Rgb,
+        pub specular_strength: f32,
     }
 
     impl Default for Colored {
         fn default() -> Self {
             Self {
                 color: Rgb::from_hex(0xFFFFFF),
+                specular_strength: 0.5,
             }
         }
     }
@@ -46,7 +49,8 @@ pub mod materials {
     impl Material for Colored {
         fn fragment(&self, input: FragmentInput) -> FragmentOutput {
             FragmentOutput {
-                albedo: self.color.into(),
+                albedo: self.color,
+                specular: self.specular_strength,
                 normal: input.normal,
             }
         }
@@ -56,12 +60,13 @@ pub mod materials {
     pub struct Textured<'a> {
         pub pixels: NonNull<RgbaU8>,
         pub width: u32,
+        pub specular_strength: f32,
         pub height: u32,
         _marker: PhantomData<&'a [RgbaU8]>,
     }
 
     impl<'a> Textured<'a> {
-        pub fn new(width: u32, height: u32, pixels: &[RgbaU8]) -> Self {
+        pub fn new(width: u32, height: u32, pixels: &[RgbaU8], specular_strength: f32) -> Self {
             let n_pixels = width as usize * height as usize;
             assert!(
                 pixels.len() >= n_pixels,
@@ -72,8 +77,18 @@ pub mod materials {
                 pixels: NonNull::from(&pixels[0]),
                 width,
                 height,
+                specular_strength,
                 _marker: PhantomData,
             }
+        }
+
+        pub fn with_image(image: &image::RgbaImage, specular_strength: f32) -> Self {
+            Self::new(
+                image.width(),
+                image.height(),
+                bytemuck::cast_slice(image.as_raw()),
+                specular_strength,
+            )
         }
     }
 
@@ -87,8 +102,14 @@ pub mod materials {
             let x = ((u * width_f) as usize).min(self.width as usize - 1);
             let y = ((v * height_f) as usize).min(self.height as usize - 1);
             let pixel = unsafe { *self.pixels.as_ptr().add(y * self.width as usize + x) };
+            let color = Rgba::from(pixel);
             FragmentOutput {
-                albedo: pixel.into(),
+                albedo: Rgb {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                },
+                specular: self.specular_strength,
                 normal: input.normal,
             }
         }
@@ -102,10 +123,11 @@ pub trait Postprocessor {
 #[derive(Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
 #[repr(C)]
 pub struct PostprocessInput {
-    pub albedo: Rgba,
+    pub albedo: Rgb,
+    pub specular: f32,
     pub position: Vec3,
-    pub depth: f32,
     pub normal: Vec3,
+    pub depth: f32,
 }
 
 pub mod postprocessors {
@@ -124,60 +146,64 @@ pub mod postprocessors {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             match input.depth {
                 1. => self.background_color.into(),
-                _ => input.albedo,
+                _ => input.albedo.into(),
             }
         }
     }
 
     /// Fill color + normal-based directional shading.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct DirectionalShading {
+    pub struct PhongLighting {
         /// Color of the background where nothing is drawn on.
         ///
         /// The default value is `Rgb::from_hex(0x000000)`.
         pub background_color: Rgb,
-        /// The direction of global directional light.
+        /// The position of the light.
         ///
-        /// The default value is `vec3(-1., -1., -1.).normalize()`.
-        pub light_direction: Vec3,
-        /// Controls the intensity of the shading effect.
-        ///
-        /// The default value is `0.5`.
-        pub shading_intensity: f32,
-        /// Controls how much of the lighting should be expressed in highlight vs. shadow.
-        /// `highlightness = 0.` would cause only subtraction to the color values, i.e. shadow.
-        /// `highlightness = 1.` would cause only addition to the color values, i.e. highlight.
-        ///
-        /// The default value is `0.6`.
-        pub highlightness: f32,
+        /// The default value is `vec3(0., 0., 0.)`.
+        pub light_position: Vec3,
+        pub view_position: Vec3,
+        pub ambient_strength: f32,
+        pub diffuse_strength: f32,
     }
 
-    impl Default for DirectionalShading {
+    impl Default for PhongLighting {
         fn default() -> Self {
             Self {
                 background_color: Rgb::from_hex(0x000000),
-                light_direction: vec3(-1., -1., -1.).normalize(),
-                shading_intensity: 0.5,
-                highlightness: 0.6,
+                light_position: vec3(0., 0., 0.),
+                view_position: vec3(0., 0., 0.),
+                ambient_strength: 0.6,
+                diffuse_strength: 0.4,
             }
         }
     }
 
-    impl Postprocessor for DirectionalShading {
+    impl Postprocessor for PhongLighting {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             if input.depth == 1. {
                 return self.background_color.into();
             }
-            let normal = input.normal.normalize_or(vec3(1., 0., 0.));
-            let light_direction = self.light_direction.normalize_or(vec3(1., 0., 0.));
-            let theta = f32::acos(normal.dot(light_direction));
-            let shading = theta / (2. * std::f32::consts::PI) - 1. + self.highlightness;
-            Rgb {
-                r: input.albedo.r + self.shading_intensity * shading,
-                g: input.albedo.g + self.shading_intensity * shading,
-                b: input.albedo.b + self.shading_intensity * shading,
+
+            fn reflect(i: Vec3, n: Vec3) -> Vec3 {
+                i - 2. * n.dot(i) * n
             }
-            .into()
+
+            let ambient = self.ambient_strength;
+
+            let normal = input.normal.normalize_or_zero();
+            let light_direction = (self.light_position - input.position).normalize_or_zero();
+            let diffuse = self.diffuse_strength * (normal.dot(light_direction)).max(0.);
+
+            let view_direction = (self.view_position - input.position).normalize_or_zero();
+            let specular = if input.specular.abs() <= f32::EPSILON {
+                0.
+            } else {
+                let reflection_direction = reflect(-light_direction, normal);
+                input.specular * view_direction.dot(reflection_direction).max(0.).powi(48)
+            };
+
+            ((ambient + diffuse + specular) * input.albedo).into()
         }
     }
 }

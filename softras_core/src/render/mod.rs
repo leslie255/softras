@@ -1,6 +1,6 @@
 use std::{array, f32};
 
-use bytemuck::Zeroable;
+use bytemuck::{Pod, Zeroable};
 use glam::*;
 
 mod color;
@@ -33,6 +33,15 @@ pub enum CullFaceMode {
     NoCulling,
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Zeroable, Pod)]
+#[repr(C)]
+pub struct GbufferPixel {
+    pub albedo: Rgb,
+    pub specular: f32,
+    pub position: Vec3,
+    pub normal: Vec3,
+}
+
 #[derive(derive_more::Debug, Clone)]
 pub struct Canvas {
     width: u32,
@@ -40,13 +49,9 @@ pub struct Canvas {
     #[debug(skip)]
     frame_buffer: Vec<RgbaU8>,
     #[debug(skip)]
-    albedo_buffer: Vec<Rgba>,
-    #[debug(skip)]
-    position_buffer: Vec<Vec3>,
-    #[debug(skip)]
-    normal_buffer: Vec<Vec3>,
-    #[debug(skip)]
     depth_buffer: Vec<f32>,
+    #[debug(skip)]
+    gbuffer: Vec<GbufferPixel>,
 }
 
 impl Default for Canvas {
@@ -61,10 +66,8 @@ impl Canvas {
             width: 0,
             height: 0,
             frame_buffer: Vec::new(),
-            albedo_buffer: Vec::new(),
-            position_buffer: Vec::new(),
-            normal_buffer: Vec::new(),
             depth_buffer: Vec::new(),
+            gbuffer: Vec::new(),
         }
     }
 
@@ -84,31 +87,30 @@ impl Canvas {
     }
 
     #[allow(dead_code)]
-    pub fn depth_buffer(&self) -> &[f32] {
-        &self.depth_buffer
+    pub fn gbuffer(&self) -> &[GbufferPixel] {
+        &self.gbuffer
     }
 
     pub fn clear(&mut self) {
         self.frame_buffer.fill(RgbaU8::zeroed());
-        self.albedo_buffer.fill(Rgba::zeroed());
-        self.position_buffer.fill(Vec3::zeroed());
-        self.normal_buffer.fill(Vec3::zeroed());
         self.depth_buffer.fill(1.0f32);
+        self.gbuffer.fill(GbufferPixel::zeroed());
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
-        self.frame_buffer
-            .resize(self.n_pixels(), Zeroable::zeroed());
-        self.albedo_buffer
-            .resize(self.n_pixels(), Zeroable::zeroed());
-        self.position_buffer
-            .resize(self.n_pixels(), Zeroable::zeroed());
-        self.normal_buffer
-            .resize(self.n_pixels(), Zeroable::zeroed());
-        self.depth_buffer
-            .resize(self.n_pixels(), Zeroable::zeroed());
+        self.frame_buffer.resize(self.n_pixels(), RgbaU8::zeroed());
+        self.depth_buffer.resize(self.n_pixels(), 0.0f32);
+        self.gbuffer.resize(
+            self.n_pixels(),
+            GbufferPixel {
+                albedo: Rgb::zeroed(),
+                specular: 0.0f32,
+                position: Vec3::zeroed(),
+                normal: Vec3::zeroed(),
+            },
+        );
     }
 
     pub fn n_pixels(&self) -> usize {
@@ -118,23 +120,21 @@ impl Canvas {
 
 pub fn postprocess<P: Postprocessor + ?Sized>(canvas: &mut Canvas, postprocessor: &P) {
     debug_assert!(canvas.frame_buffer.len() == canvas.n_pixels());
-    debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
-    debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.gbuffer.len() == canvas.n_pixels());
     debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
 
     for x_pixel in 0..canvas.width {
         for y_pixel in 0..canvas.height {
             let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
             let result = unsafe { canvas.frame_buffer.get_unchecked_mut(i_pixel) };
-            let albedo = unsafe { *canvas.albedo_buffer.get_unchecked_mut(i_pixel) };
-            let position = unsafe { *canvas.position_buffer.get_unchecked_mut(i_pixel) };
-            let normal = unsafe { *canvas.normal_buffer.get_unchecked_mut(i_pixel) };
-            let depth = unsafe { *canvas.depth_buffer.get_unchecked_mut(i_pixel) };
+            let gbuffer_pixel = unsafe { *canvas.gbuffer.get_unchecked(i_pixel) };
+            let depth = unsafe { *canvas.depth_buffer.get_unchecked(i_pixel) };
             let material_input = PostprocessInput {
-                albedo,
-                position,
+                albedo: gbuffer_pixel.albedo,
+                specular: gbuffer_pixel.specular,
+                position: gbuffer_pixel.position,
+                normal: gbuffer_pixel.normal,
                 depth,
-                normal,
             };
             *result = postprocessor.postprocess(material_input).into();
         }
@@ -146,39 +146,47 @@ pub fn postprocess<P: Postprocessor + ?Sized>(canvas: &mut Canvas, postprocessor
 /// * `canvas`           - the canvas to draw on
 /// * `options`          - the render options
 /// * `mvp`              - the model-view-projection matrix, equals to projection * view * model
-/// * `normal_transform` - the matrix for transforming normals, equals to `transpose(inverse(view *
-///   model))`
+/// * `model`            - the model matrix
+/// * `normal_transform` - the matrix for transforming normals, equals to
+///   `transpose(inverse(model))`
 /// * `vertices`         - the vertices of the triangle
 pub fn draw_triangle<S: Material + ?Sized>(
     canvas: &mut Canvas,
     options: RenderOptions,
     mvp: Mat4,
+    model: Mat4,
     normal_transform: Mat4,
     material: &S,
     vertices: [Vertex; 3],
 ) {
-    let vertices_clip: [Vertex<Vec4>; 3] = vertices.map(|vertex| {
-        let position = mvp * vertex.position.extend(1.);
-        vertex.with_position(position)
+    let vertices_clip: [VertexClip; 3] = vertices.map(|vertex| {
+        let position_clip = mvp * vertex.position.extend(1.);
+        VertexClip {
+            position_world: model.transform_point3(vertex.position),
+            position: position_clip.xyz(),
+            w: position_clip.w,
+            uv: vertex.uv,
+            normal: normal_transform.transform_vector3(vertex.normal),
+        }
     });
 
     #[rustfmt::skip]
     match vertices_clip.map(|vertex| vertex.position.z >= 0.) {
         // All points are in front of near plane, no near plane clipping needed.
-        [true, true, true] => after_near_clipping(canvas, options, normal_transform, vertices_clip, material),
+        [true, true, true] => after_near_clipping(canvas, options, vertices_clip, material),
 
         // All points are behind near plane.
         [false, false, false] => (),
 
         // Clip Case 1: One point is behind the near plane, the other two points are in front.
-        [false, true, true] => clip_case_1::<_, 0>(canvas, options, normal_transform, vertices_clip, material),
-        [true, false, true] => clip_case_1::<_, 1>(canvas, options, normal_transform, vertices_clip, material),
-        [true, true, false] => clip_case_1::<_, 2>(canvas, options, normal_transform, vertices_clip, material),
+        [false, true, true] => clip_case_1::<_, 0>(canvas, options, vertices_clip, material),
+        [true, false, true] => clip_case_1::<_, 1>(canvas, options, vertices_clip, material),
+        [true, true, false] => clip_case_1::<_, 2>(canvas, options, vertices_clip, material),
 
         // Clip Case 2: Two points are behind the near plane, the other point is in front.
-        [true, false, false] => clip_case_2::<_, 0>(canvas, options, normal_transform, vertices_clip, material),
-        [false, true, false] => clip_case_2::<_, 1>(canvas, options, normal_transform, vertices_clip, material),
-        [false, false, true] => clip_case_2::<_, 2>(canvas, options, normal_transform, vertices_clip, material),
+        [true, false, false] => clip_case_2::<_, 0>(canvas, options, vertices_clip, material),
+        [false, true, false] => clip_case_2::<_, 1>(canvas, options, vertices_clip, material),
+        [false, false, true] => clip_case_2::<_, 2>(canvas, options, vertices_clip, material),
     };
 }
 
@@ -187,33 +195,20 @@ pub fn draw_triangle<S: Material + ?Sized>(
 fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    normal_transform: Mat4,
-    vertices: [Vertex<Vec4>; 3],
+    vertices: [VertexClip; 3],
     material: &S,
 ) {
     const { assert!(I_BACK < 3) };
     let [v0, v1, v2] = vertices;
     let [v0_vb, v1_vb, v2_vb] = vertices.map(|p| near_plane_intersection(p, vertices[I_BACK]));
-    let result_vertices: [[Vertex<Vec4>; 3]; 2] = match I_BACK {
+    let result_vertices: [[VertexClip; 3]; 2] = match I_BACK {
         0 => [[v1_vb, v1, v2], [v1_vb, v2, v2_vb]],
         1 => [[v2_vb, v2, v0], [v2_vb, v0, v0_vb]],
         2 => [[v0_vb, v0, v1], [v0_vb, v1, v1_vb]],
         _ => unreachable!(),
     };
-    after_near_clipping(
-        canvas,
-        options,
-        normal_transform,
-        result_vertices[0],
-        material,
-    );
-    after_near_clipping(
-        canvas,
-        options,
-        normal_transform,
-        result_vertices[1],
-        material,
-    );
+    after_near_clipping(canvas, options, result_vertices[0], material);
+    after_near_clipping(canvas, options, result_vertices[1], material);
 }
 
 // Clip Case 2: Two points are behind the near plane, the other point is in front.
@@ -222,26 +217,28 @@ fn clip_case_1<S: Material + ?Sized, const I_BACK: usize>(
 fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    normal_transform: Mat4,
-    vertices: [Vertex<Vec4>; 3],
+    vertices: [VertexClip; 3],
     material: &S,
 ) {
     const { assert!(I_FRONT < 3) };
     let [v0, v1, v2] = vertices;
     let [v0_vf, v1_vf, v2_vf] = vertices.map(|p| near_plane_intersection(vertices[I_FRONT], p));
-    let positions: [Vertex<Vec4>; 3] = match I_FRONT {
+    let positions: [VertexClip; 3] = match I_FRONT {
         0 => [v0, v1_vf, v2_vf],
         1 => [v0_vf, v1, v2_vf],
         2 => [v0_vf, v1_vf, v2],
         _ => unreachable!(),
     };
-    after_near_clipping(canvas, options, normal_transform, positions, material);
+    after_near_clipping(canvas, options, positions, material);
 }
 
-fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Vertex<Vec4> {
+fn near_plane_intersection(v_front: VertexClip, v_back: VertexClip) -> VertexClip {
     let t = v_front.position.z / (v_front.position.z - v_back.position.z);
-    Vertex {
+    VertexClip {
+        position_world: v_front.position_world
+            + t * (v_back.position_world - v_front.position_world),
         position: v_front.position + t * (v_back.position - v_front.position),
+        w: v_front.w + t * (v_back.w - v_front.w),
         uv: v_front.uv + t * (v_back.uv - v_front.uv),
         normal: v_front.normal + t * (v_back.normal - v_front.normal),
     }
@@ -251,11 +248,11 @@ fn near_plane_intersection(v_front: Vertex<Vec4>, v_back: Vertex<Vec4>) -> Verte
 fn after_near_clipping<S: Material + ?Sized>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    normal_transform: Mat4,
-    vertices_clip: [Vertex<Vec4>; 3],
+    vertices_clip: [VertexClip; 3],
     material: &S,
 ) {
-    let positions_div_w = vertices_clip.map(|vertex| vertex.position.xyz() / vertex.position.w);
+    let positions_div_w = vertices_clip.map(|vertex| vertex.position.xyz() / vertex.w);
+    let positions_world_div_w = vertices_clip.map(|vertex| vertex.position_world / vertex.w);
     let positions_ndc = positions_div_w.map(|p| p.xy());
 
     match options.cull_face {
@@ -266,12 +263,13 @@ fn after_near_clipping<S: Material + ?Sized>(
 
     let vertices_ndc: [VertexNdc; 3] = array::from_fn(|i| {
         let vertex_clip = vertices_clip[i];
-        let w = vertex_clip.position.w;
+        let w = vertex_clip.w;
         VertexNdc {
             w_inv: 1. / w,
             position_div_w: positions_div_w[i],
+            position_world_div_w: positions_world_div_w[i],
             uv_div_w: vertex_clip.uv / w,
-            normal: w * normal_transform.transform_vector3(vertex_clip.normal),
+            normal: w * vertex_clip.normal,
         }
     });
 
@@ -312,11 +310,11 @@ fn rasterize<M: Material + ?Sized>(
     material: &M,
     [x_min, x_max, y_min, y_max]: [u32; 4],
 ) {
-    debug_assert!(canvas.albedo_buffer.len() == canvas.n_pixels());
-    debug_assert!(canvas.normal_buffer.len() == canvas.n_pixels());
+    debug_assert!(canvas.gbuffer.len() == canvas.n_pixels());
     debug_assert!(canvas.depth_buffer.len() == canvas.n_pixels());
 
     let positions_ndc: [Vec2; 3] = vertices_ndc.map(|p| p.position_div_w.xy());
+    let positions_world: [Vec3; 3] = vertices_ndc.map(|p| p.position_world_div_w);
     let depths: [f32; 3] = vertices_ndc.map(|p| p.position_div_w.z);
     let uvs_div_w: [Vec2; 3] = vertices_ndc.map(|p| p.uv_div_w);
     let normals: [Vec3; 3] = vertices_ndc.map(|p| p.normal);
@@ -325,9 +323,7 @@ fn rasterize<M: Material + ?Sized>(
     for x_pixel in x_min..=x_max {
         for y_pixel in y_min..=y_max {
             let i_pixel = y_pixel as usize * canvas.width as usize + x_pixel as usize;
-            let albedo_sample = unsafe { canvas.albedo_buffer.get_unchecked_mut(i_pixel) };
-            let position_sample = unsafe { canvas.position_buffer.get_unchecked_mut(i_pixel) };
-            let normal_sample = unsafe { canvas.normal_buffer.get_unchecked_mut(i_pixel) };
+            let gbuffer_sample = unsafe { canvas.gbuffer.get_unchecked_mut(i_pixel) };
             let depth_sample = unsafe { canvas.depth_buffer.get_unchecked_mut(i_pixel) };
 
             let p_ndc = vec2(
@@ -352,9 +348,12 @@ fn rasterize<M: Material + ?Sized>(
             };
 
             let fragment_output = material.fragment(fragment_input);
-            *albedo_sample = fragment_output.albedo;
-            *position_sample = fragment_input.position;
-            *normal_sample = fragment_output.normal;
+            *gbuffer_sample = GbufferPixel {
+                albedo: fragment_output.albedo,
+                specular: fragment_output.specular,
+                position: w * terp_vec3(weights, positions_world),
+                normal,
+            };
             *depth_sample = depth;
         }
     }
@@ -573,9 +572,20 @@ impl Camera {
 /// A vertex in NDC space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct VertexNdc {
+    position_world_div_w: Vec3,
     position_div_w: Vec3,
     w_inv: f32,
     uv_div_w: Vec2,
+    normal: Vec3,
+}
+
+/// A vertex in Clip space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VertexClip {
+    position_world: Vec3,
+    position: Vec3,
+    w: f32,
+    uv: Vec2,
     normal: Vec3,
 }
 
@@ -600,21 +610,11 @@ impl Vertex {
     }
 }
 
-impl<T: Copy> Vertex<T> {
-    pub const fn with_position<U: Copy>(self, position: U) -> Vertex<U> {
-        Vertex {
-            position,
-            uv: self.uv,
-            normal: self.normal,
-        }
-    }
-}
-
-pub trait IntoVertex: Copy {
+pub trait ObjectVertex: Copy {
     fn into_vertex(selfs: [Self; 3]) -> [Vertex; 3];
 }
 
-impl IntoVertex for obj::Position {
+impl ObjectVertex for obj::Position {
     fn into_vertex(positions: [Self; 3]) -> [Vertex; 3] {
         let positions @ [p0, p1, p2] = positions.map(|p| Vec3::from_array(p.position));
         let normal = (p1 - p0).cross(p2 - p0);
@@ -626,7 +626,7 @@ impl IntoVertex for obj::Position {
     }
 }
 
-impl IntoVertex for obj::Vertex {
+impl ObjectVertex for obj::Vertex {
     fn into_vertex(vertices: [Self; 3]) -> [Vertex; 3] {
         vertices.map(|vertex| Vertex {
             position: Vec3::from_array(vertex.position),
@@ -636,7 +636,7 @@ impl IntoVertex for obj::Vertex {
     }
 }
 
-impl IntoVertex for obj::TexturedVertex {
+impl ObjectVertex for obj::TexturedVertex {
     fn into_vertex(vertices: [Self; 3]) -> [Vertex; 3] {
         vertices.map(|vertex| Vertex {
             position: Vec3::from_array(vertex.position),
@@ -646,7 +646,7 @@ impl IntoVertex for obj::TexturedVertex {
     }
 }
 
-impl<T: Into<Vertex> + Copy> IntoVertex for T {
+impl<T: Into<Vertex> + Copy> ObjectVertex for T {
     fn into_vertex(selfs: [Self; 3]) -> [Vertex; 3] {
         selfs.map(Into::into)
     }
@@ -677,69 +677,99 @@ impl ObjectIndex for u32 {
 }
 
 #[allow(dead_code)]
-pub fn draw_vertices<M: Material + ?Sized, V: IntoVertex>(
+pub fn draw_vertices<M: Material + ?Sized, V: ObjectVertex>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    model: Mat4,
+    view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
 ) {
-    let mvp = projection * model_view;
-    let normal_transform = model_view.inverse().transpose();
+    let mvp = projection * view * model;
+    let normal_transform = model.inverse().transpose();
     for vertices_raw in vertices.iter().copied().array_chunks::<3>() {
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            mvp,
+            model,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_vertices_indexed<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
+#[expect(clippy::too_many_arguments)]
+pub fn draw_vertices_indexed<M: Material + ?Sized, V: ObjectVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    model: Mat4,
+    view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
     indices: &[I],
 ) {
-    let mvp = projection * model_view;
-    let normal_transform = model_view.inverse().transpose();
+    let mvp = projection * view * model;
+    let normal_transform = model.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| vertices[i.to_usize()]);
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            mvp,
+            model,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
 #[allow(dead_code)]
+#[expect(clippy::too_many_arguments)]
 pub unsafe fn draw_vertices_indexed_unchecked<
     M: Material + ?Sized,
-    V: IntoVertex,
+    V: ObjectVertex,
     I: ObjectIndex,
 >(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    model: Mat4,
+    view: Mat4,
     projection: Mat4,
     material: &M,
     vertices: &[V],
     indices: &[I],
 ) {
-    let mvp = projection * model_view;
-    let normal_transform = model_view.inverse().transpose();
+    let mvp = projection * view * model;
+    let normal_transform = model.inverse().transpose();
     for indices in indices.iter().copied().array_chunks::<3>() {
         let vertices_raw = indices.map(|i| unsafe { *vertices.get_unchecked(i.to_usize()) });
         let vertices = V::into_vertex(vertices_raw);
-        draw_triangle(canvas, options, mvp, normal_transform, material, vertices);
+        draw_triangle(
+            canvas,
+            options,
+            mvp,
+            model,
+            normal_transform,
+            material,
+            vertices,
+        );
     }
 }
 
 #[allow(dead_code)]
-pub fn draw_object<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
+pub fn draw_object<M: Material + ?Sized, V: ObjectVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    model: Mat4,
+    view: Mat4,
     projection: Mat4,
     material: &M,
     object: &Obj<V, I>,
@@ -747,7 +777,8 @@ pub fn draw_object<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
     draw_vertices_indexed(
         canvas,
         options,
-        model_view,
+        model,
+        view,
         projection,
         material,
         &object.vertices,
@@ -756,10 +787,11 @@ pub fn draw_object<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
 }
 
 #[allow(dead_code)]
-pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex, I: ObjectIndex>(
+pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: ObjectVertex, I: ObjectIndex>(
     canvas: &mut Canvas,
     options: RenderOptions,
-    model_view: Mat4,
+    model: Mat4,
+    view: Mat4,
     projection: Mat4,
     material: &M,
     object: &Obj<V, I>,
@@ -768,7 +800,8 @@ pub unsafe fn draw_object_unchecked<M: Material + ?Sized, V: IntoVertex, I: Obje
         draw_vertices_indexed_unchecked(
             canvas,
             options,
-            model_view,
+            model,
+            view,
             projection,
             material,
             &object.vertices,

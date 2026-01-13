@@ -417,7 +417,10 @@ impl Game {
 
         let mut draw_teapot =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::Colored { color };
+                let material = materials::Colored {
+                    color,
+                    specular_strength: 0.5,
+                };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_radians());
@@ -425,7 +428,8 @@ impl Game {
                     draw_object_unchecked(
                         &mut self.canvas,
                         render_options,
-                        view * model,
+                        model,
+                        view,
                         projection,
                         &material,
                         &self.teapot,
@@ -438,7 +442,10 @@ impl Game {
 
         let mut draw_suzanne =
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
-                let material = materials::Colored { color };
+                let material = materials::Colored {
+                    color,
+                    specular_strength: 0.5,
+                };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
                     * Mat4::from_rotation_y(rotation_degrees.to_radians());
@@ -446,7 +453,8 @@ impl Game {
                     draw_object_unchecked(
                         &mut self.canvas,
                         render_options,
-                        view * model,
+                        model,
+                        view,
                         projection,
                         &material,
                         &self.suzanne,
@@ -455,22 +463,18 @@ impl Game {
             };
         draw_suzanne(1., vec3(5., 1., 6.), -45., Rgb::from_hex(0xC08040));
 
+        let cube_material = materials::Textured::with_image(&self.test_cube_image, 0.5);
         let mut draw_cube = |scale: f32, position: Vec3, rotation_degrees: f32| -> () {
-            let pixels: &[u8] = self.test_cube_image.as_raw();
-            let material = materials::Textured::new(
-                self.test_cube_image.width(),
-                self.test_cube_image.height(),
-                bytemuck::cast_slice(pixels),
-            );
             let model = Mat4::from_translation(position)
                 * Mat4::from_scale(vec3(scale, scale, scale))
                 * Mat4::from_rotation_y(rotation_degrees.to_radians());
             draw_vertices_indexed(
                 &mut self.canvas,
                 render_options,
-                view * model,
+                model,
+                view,
                 projection,
-                &material,
+                &cube_material,
                 &Self::CUBE_VERTICES,
                 &Self::CUBE_INDICIES,
             );
@@ -480,48 +484,43 @@ impl Game {
 
         // Draw ground.
         {
-            #[rustfmt::skip]
-            let ground_vertices = [
-                Vertex::new([1., 0., 0.], [0., 1.], [0., 1., 0.]),
-                Vertex::new([0., 0., 0.], [1., 1.], [0., 1., 0.]),
-                Vertex::new([0., 0., 1.], [1., 0.], [0., 1., 0.]),
-                Vertex::new([1., 0., 1.], [0., 0.], [0., 1., 0.]),
-            ];
-            let ground_indices = [0u16, 1, 2, 2, 3, 0];
-            let material = materials::Colored {
-                color: Rgb::from_hex(0x101820),
+            let cube_material = materials::Colored {
+                color: Rgb::from_hex(0x808080),
+                specular_strength: 0.0,
             };
-            let size = 100.0f32;
-            let height = 0.1f32;
-            let model = Mat4::from_translation(0.5 * vec3(-size, -height, -size))
-                * Mat4::from_scale(vec3(size, height, size));
-            unsafe {
-                draw_vertices_indexed_unchecked(
-                    &mut self.canvas,
-                    render_options,
-                    view * model,
-                    projection,
-                    &material,
-                    &ground_vertices,
-                    &ground_indices,
-                );
-            }
+            let scale = 100.;
+            let model = Mat4::from_translation(vec3(-0.5 * scale, -1., -0.5 * scale))
+                * Mat4::from_scale(vec3(scale, 1., scale));
+            draw_vertices_indexed(
+                &mut self.canvas,
+                render_options,
+                model,
+                view,
+                projection,
+                &cube_material,
+                &Self::CUBE_VERTICES,
+                &Self::CUBE_INDICIES,
+            );
         }
 
+        let t = (SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            % 86400.) as f32;
+        let tau = std::f32::consts::TAU;
+        let period = 4.;
         let background_color = Rgb::from_hex(0x141414);
-        let postprocessor = postprocessors::DirectionalShading {
+        let postprocessor = postprocessors::PhongLighting {
             background_color,
-            light_direction: {
-                let t = (SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs_f64()
-                    % 86400.) as f32;
-                view.transform_vector3(vec3(t.cos(), -1., t.sin()))
-                    .normalize()
-            },
-            shading_intensity: 1.0,
-            highlightness: 0.7,
+            light_position: vec3(
+                10. * f32::sin(tau / period * t),
+                10.,
+                10. * f32::cos(tau / period * t),
+            ),
+            view_position: self.camera.position,
+            ambient_strength: 0.3,
+            diffuse_strength: 0.7,
         };
         // let postprocessor = postprocessors::Basic { background_color };
         postprocess(&mut self.canvas, &postprocessor);
