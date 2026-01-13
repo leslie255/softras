@@ -21,6 +21,8 @@ use render::*;
 use respack::*;
 use utils::*;
 
+use crate::render::postprocessors::Light;
+
 pub const CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -491,9 +493,10 @@ impl Game {
                 color: Rgb::from_hex(0x808080),
                 specular_strength: 0.0,
             };
-            let scale = 100.;
-            let model = Mat4::from_translation(vec3(-0.5 * scale, -1., -0.5 * scale))
-                * Mat4::from_scale(vec3(scale, 1., scale));
+            let scale = 40.;
+            let height = 0.5;
+            let model = Mat4::from_translation(vec3(-0.5 * scale, -height, -0.5 * scale))
+                * Mat4::from_scale(vec3(scale, height, scale));
             draw_vertices_indexed(
                 &mut self.canvas,
                 render_options,
@@ -512,7 +515,7 @@ impl Game {
             .as_secs_f64()
             % 86400.) as f32;
         let tau = std::f32::consts::TAU;
-        let period = 12.;
+        let period = 32.;
         let sun_position = vec3(
             80. * f32::sin(tau / period * t),
             40.,
@@ -540,13 +543,18 @@ impl Game {
             }
         };
 
-        let background_color = Rgb::from_hex(0x141414);
+        let background_color = Rgba::from_hex(0x141414FF);
         let postprocessor = postprocessors::PhongLighting {
             background_color,
-            light_position: sun_position,
+            light_positions: [Light {
+                position: sun_position,
+                strength: 1.,
+                specular: true,
+            }],
             view_position: self.camera.position,
             ambient_strength: 0.3,
             diffuse_strength: 0.7,
+            specular_power: 32i32,
         };
         // let postprocessor = postprocessors::Basic { background_color };
         postprocess(&mut self.canvas, &postprocessor);

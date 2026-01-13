@@ -138,51 +138,64 @@ pub mod postprocessors {
     pub struct Basic {
         /// Color of the background where nothing is drawn on.
         ///
-        /// The default value is `Rgb::from_hex(0x000000)`.
-        pub background_color: Rgb,
+        /// The default value is `Rgba::from_hex(0x000000FF)`.
+        pub background_color: Rgba,
     }
 
     impl Postprocessor for Basic {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             match input.depth {
-                1. => self.background_color.into(),
+                1. => self.background_color,
                 _ => input.albedo.into(),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Light {
+        pub position: Vec3,
+        pub strength: f32,
+        pub specular: bool,
+    }
+
+    impl Default for Light {
+        fn default() -> Self {
+            Self {
+                position: vec3(0., 0., 0.),
+                strength: 0.,
+                specular: false,
             }
         }
     }
 
     /// Fill color + normal-based directional shading.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    pub struct PhongLighting {
-        /// Color of the background where nothing is drawn on.
-        ///
-        /// The default value is `Rgb::from_hex(0x000000)`.
-        pub background_color: Rgb,
-        /// The position of the light.
-        ///
-        /// The default value is `vec3(0., 0., 0.)`.
-        pub light_position: Vec3,
+    pub struct PhongLighting<const N_LIGHTS: usize> {
+        pub background_color: Rgba,
+        pub light_positions: [Light; N_LIGHTS],
         pub view_position: Vec3,
         pub ambient_strength: f32,
         pub diffuse_strength: f32,
+        pub specular_power: i32,
     }
 
-    impl Default for PhongLighting {
+    impl<const N_LIGHTS: usize> Default for PhongLighting<N_LIGHTS> {
         fn default() -> Self {
             Self {
-                background_color: Rgb::from_hex(0x000000),
-                light_position: vec3(0., 0., 0.),
+                background_color: Rgba::from_hex(0x000000FF),
+                light_positions: [Light::default(); _],
                 view_position: vec3(0., 0., 0.),
                 ambient_strength: 0.6,
                 diffuse_strength: 0.4,
+                specular_power: 32i32,
             }
         }
     }
 
-    impl Postprocessor for PhongLighting {
+    impl<const N_LIGHTS: usize> Postprocessor for PhongLighting<N_LIGHTS> {
         fn postprocess(&self, input: PostprocessInput) -> Rgba {
             if input.depth == 1. {
-                return self.background_color.into();
+                return self.background_color;
             }
 
             fn reflect(i: Vec3, n: Vec3) -> Vec3 {
@@ -193,21 +206,29 @@ pub mod postprocessors {
                 return input.albedo.into();
             }
 
-            let ambient = self.ambient_strength;
+            let mut result_strength = self.ambient_strength;
+            for light in self.light_positions {
+                let normal = input.normal.normalize_or_zero();
+                let light_direction = (light.position - input.position).normalize_or_zero();
+                let diffuse = self.diffuse_strength * (normal.dot(light_direction)).max(0.);
 
-            let normal = input.normal.normalize_or_zero();
-            let light_direction = (self.light_position - input.position).normalize_or_zero();
-            let diffuse = self.diffuse_strength * (normal.dot(light_direction)).max(0.);
+                let view_direction = (self.view_position - input.position).normalize_or_zero();
+                let specular = if input.specular.abs() <= f32::EPSILON || !light.specular {
+                    0.
+                } else {
+                    let reflection_direction = reflect(-light_direction, normal);
+                    input.specular
+                        * view_direction
+                            .dot(reflection_direction)
+                            .max(0.)
+                            .powi(self.specular_power)
+                };
 
-            let view_direction = (self.view_position - input.position).normalize_or_zero();
-            let specular = if input.specular.abs() <= f32::EPSILON {
-                0.
-            } else {
-                let reflection_direction = reflect(-light_direction, normal);
-                input.specular * view_direction.dot(reflection_direction).max(0.).powi(48)
-            };
+                result_strength += light.strength * diffuse;
+                result_strength += light.strength * specular;
+            }
 
-            ((ambient + diffuse + specular) * input.albedo).into()
+            (result_strength * input.albedo).into()
         }
     }
 }
