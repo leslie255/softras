@@ -16,6 +16,10 @@
     <string>Software Rasterizer</string>
     <key>CFBundleName</key>
     <string>SOFTRAS</string>
+    <key>CFBundleIconFile</key>
+    <string>ApplicationIcon</string>
+    <key>CFBundleIconName</key>
+    <string>ApplicationIcon</string>
 </dict>
 </plist>
 
