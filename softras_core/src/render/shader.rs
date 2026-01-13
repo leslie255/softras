@@ -189,6 +189,10 @@ pub mod postprocessors {
                 i - 2. * n.dot(i) * n
             }
 
+            if input.specular > 1. {
+                return input.albedo.into();
+            }
+
             let ambient = self.ambient_strength;
 
             let normal = input.normal.normalize_or_zero();

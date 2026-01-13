@@ -16,7 +16,7 @@ mod respack;
 mod utils;
 
 pub use key_code::*;
-use obj::Obj;
+use obj::{Obj, TexturedVertex};
 use render::*;
 use respack::*;
 use utils::*;
@@ -52,6 +52,7 @@ pub fn pack_resources(res_dir: &str, output: &str) -> Result<(), PackResourceErr
     let mut res_packer = ResourcePacker::new(res_dir);
     pack(&mut res_packer, "models/teapot.obj")?;
     pack(&mut res_packer, "models/suzanne.obj")?;
+    pack(&mut res_packer, "models/sphere.obj")?;
     pack(&mut res_packer, "textures/test_cube.png")?;
 
     res_packer
@@ -101,6 +102,7 @@ pub struct Game {
     teapot: Obj<obj::Position>,
     suzanne: Obj<obj::TexturedVertex>,
     test_cube_image: image::RgbaImage,
+    sphere: Obj<TexturedVertex>,
 }
 
 #[derive(Debug, Display, Error, From)]
@@ -147,6 +149,7 @@ impl Game {
             },
             teapot: obj::load_obj(get_resource(&respack, "models/teapot.obj")?).unwrap(),
             suzanne: obj::load_obj(get_resource(&respack, "models/suzanne.obj")?).unwrap(),
+            sphere: obj::load_obj(get_resource(&respack, "models/sphere.obj")?).unwrap(),
             test_cube_image: {
                 let bytes = get_resource(&respack, "textures/test_cube.png")?;
                 image::load_from_memory(bytes).unwrap().to_rgba8()
@@ -509,15 +512,38 @@ impl Game {
             .as_secs_f64()
             % 86400.) as f32;
         let tau = std::f32::consts::TAU;
-        let period = 4.;
+        let period = 12.;
+        let sun_position = vec3(
+            80. * f32::sin(tau / period * t),
+            40.,
+            80. * f32::cos(tau / period * t),
+        );
+        // Draw sun
+        {
+            let sun_size = 4.;
+            let material = materials::Colored {
+                color: Rgb::from_hex(0xFFFFFF),
+                specular_strength: 2.0,
+            };
+            let model = Mat4::from_translation(sun_position)
+                * Mat4::from_scale(vec3(sun_size, sun_size, sun_size));
+            unsafe {
+                draw_object_unchecked(
+                    &mut self.canvas,
+                    render_options,
+                    model,
+                    view,
+                    projection,
+                    &material,
+                    &self.sphere,
+                );
+            }
+        };
+
         let background_color = Rgb::from_hex(0x141414);
         let postprocessor = postprocessors::PhongLighting {
             background_color,
-            light_position: vec3(
-                10. * f32::sin(tau / period * t),
-                10.,
-                10. * f32::cos(tau / period * t),
-            ),
+            light_position: sun_position,
             view_position: self.camera.position,
             ambient_strength: 0.3,
             diffuse_strength: 0.7,
