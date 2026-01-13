@@ -2,18 +2,19 @@
 
 **Software Rasterizer** (CPU-side 3D rendering)
 
-<img width="600" alt="different objects" src="https://github.com/user-attachments/assets/4b31cc9b-3737-4358-9dfd-462883533150"/>
+<img width="50%" alt="image" src="https://github.com/user-attachments/assets/06d3917c-7e66-4e79-9eda-f99081a2348c"/>
 
 ## Project Structure
 
-The project is divided into two cargo crates:
-- `softras_core`, where all the rendering logic happens, detached from any platform-specific APIs
+The project is divided into several cargo crates:
+- `softras_core`, where all the rendering logic happens, detached from any platform-specific APIs and designed to be portable over any backend (windowed app, web, etc)
 - `softras_wgpu_winit`, the backend that manages window creation, frame presentation, and forwards UI events to the rendering module
 - `softras_muilib`, another alternative backend based on my other project [`muilib`](https://github.com/leslie255/muilib)
+- `softras_term`, a "hacky" backend that runs in the terminal via KittyTerm's [Terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
 
 ## Building and Running
 
-To build and run:
+To build and run (the `softras_wgpu_winit` backend is recommanded, `--release` profile required for reasonable performance):
 
 ```bash
 $ cargo run --release --package softras_winit_wgpu
