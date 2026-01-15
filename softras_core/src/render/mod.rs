@@ -235,12 +235,11 @@ fn clip_case_2<S: Material + ?Sized, const I_FRONT: usize>(
 fn near_plane_intersection(v_front: VertexClip, v_back: VertexClip) -> VertexClip {
     let t = v_front.position.z / (v_front.position.z - v_back.position.z);
     VertexClip {
-        position_world: v_front.position_world
-            + t * (v_back.position_world - v_front.position_world),
-        position: v_front.position + t * (v_back.position - v_front.position),
-        w: v_front.w + t * (v_back.w - v_front.w),
-        uv: v_front.uv + t * (v_back.uv - v_front.uv),
-        normal: v_front.normal + t * (v_back.normal - v_front.normal),
+        position_world: lerp_vec3(v_front.position_world, v_back.position_world, t),
+        position: lerp_vec3(v_front.position, v_back.position, t),
+        w: lerp(v_front.w, v_back.w, t),
+        uv: lerp_vec2(v_front.uv, v_back.uv, t),
+        normal: lerp_vec3(v_front.normal, v_back.normal, t),
     }
 }
 
@@ -443,6 +442,18 @@ fn line_rect_intersects(p0: Vec2, p1: Vec2, [x_min, x_max, y_min, y_max]: [f32; 
         }
     }
     u1 <= u2 && u2 >= 0. && u1 <= 1.
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + t * (b - a)
+}
+
+fn lerp_vec2(a: Vec2, b: Vec2, t: f32) -> Vec2 {
+    a + t * (b - a)
+}
+
+fn lerp_vec3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+    a + t * (b - a)
 }
 
 fn point_in_triangle([a, b, c]: [Vec2; 3], p: Vec2) -> bool {

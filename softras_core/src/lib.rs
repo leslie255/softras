@@ -424,7 +424,7 @@ impl Game {
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
                 let material = materials::Colored {
                     color,
-                    specular_strength: 0.5,
+                    specular_strength: 0.8,
                 };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
@@ -449,7 +449,7 @@ impl Game {
             |scale: f32, position: Vec3, rotation_degrees: f32, color: Rgb| -> () {
                 let material = materials::Colored {
                     color,
-                    specular_strength: 0.5,
+                    specular_strength: 0.8,
                 };
                 let model = Mat4::from_translation(position)
                     * Mat4::from_scale(vec3(scale, scale, scale))
@@ -491,7 +491,7 @@ impl Game {
         {
             let cube_material = materials::Colored {
                 color: Rgb::from_hex(0x808080),
-                specular_strength: 0.0,
+                specular_strength: 0.2,
             };
             let scale = 40.;
             let height = 0.5;
@@ -515,7 +515,7 @@ impl Game {
             .as_secs_f64()
             % 86400.) as f32;
         let tau = std::f32::consts::TAU;
-        let period = 32.;
+        let period = 240.;
         let sun_position = vec3(
             80. * f32::sin(tau / period * t),
             40.,
